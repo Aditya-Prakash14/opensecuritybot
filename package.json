@@ -1,0 +1,27 @@
+{
+  "name": "opensecuritybot",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VAPT-Agent — local CLI that triages, explains and reports scanner findings for authorized engagements",
+  "type": "module",
+  "bin": {
+    "vapt": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.ts",
+    "build": "tsc",
+    "start": "node dist/cli.js",
+    "test": "node --import tsx --test test/core.test.ts"
+  },
+  "dependencies": {
+    "commander": "^15.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

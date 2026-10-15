@@ -1,0 +1,38 @@
+[
+  {
+    "id": "F-1",
+    "tool": "nuclei",
+    "template_id": "http-missing-security-headers",
+    "target": "https://app.example.com",
+    "title": "Missing security headers",
+    "description": "Response is missing Content-Security-Policy, X-Frame-Options and Strict-Transport-Security headers.",
+    "severity": "low"
+  },
+  {
+    "id": "F-2",
+    "tool": "nuclei",
+    "template_id": "jquery-version",
+    "target": "https://app.example.com/assets/vendor.js",
+    "title": "Outdated jQuery (1.12.4)",
+    "description": "Detected jQuery 1.12.4, affected by CVE-2020-11022 (XSS via htmlPrefilter).",
+    "severity": "medium",
+    "cve": ["CVE-2020-11022"]
+  },
+  {
+    "id": "F-3",
+    "tool": "custom-recon",
+    "target": "https://api.example.com",
+    "title": "Exposed .git/config",
+    "description": "GET /.git/config returned 200 with repository remote URLs.",
+    "severity": "high",
+    "raw": { "status": 200, "path": "/.git/config" }
+  },
+  {
+    "id": "F-4",
+    "tool": "nmap",
+    "target": "203.0.113.9",
+    "title": "Redis 5.0.7 reachable on 6379",
+    "description": "Unauthenticated Redis instance reachable from the assessment host. (This finding is outside scope.json on purpose — it should be skipped.)",
+    "severity": "high"
+  }
+]
