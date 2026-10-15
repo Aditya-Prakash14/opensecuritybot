@@ -9,7 +9,7 @@ import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
-import { bold, dim, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import { bold, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import { compareFindings, printDiffSummary, renderDiffHtml, renderDiffMarkdown } from "./diff.js";
 import {
   createWorkspace,
@@ -130,7 +130,7 @@ program
           console.error(red(`fail: ${f.id}: ${(e as Error).message}`));
         }
       } else {
-        process.stdout.write(`\n${bold(f.id)} — ${f.title ?? f.target} ${severityColor(f.severity)(`[${f.severity ?? "unknown"}]`)}\n\n`);
+        process.stdout.write(findingHeader(f));
         const sp = !opts.quiet ? spinner(`Triaging ${f.id}`) : { stop: () => {} };
         try {
           await streamMarkdown(triageFindingMarkdownStream(f, ctx), { onFirstChunk: () => sp.stop() });

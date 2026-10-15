@@ -1,4 +1,5 @@
 import { loadConfig } from "./config.js";
+import { countdownSpinner } from "./ui.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -136,22 +137,35 @@ export function estimateMessageTokens(messages: ChatMessage[]): number {
   return messages.reduce((acc, m) => acc + estimateTokens(m.content) + 4, 0);
 }
 
-async function waitRetry(res?: Response): Promise<void> {
+async function waitRetry(res?: Response, detail = ""): Promise<void> {
   const retryHeader = res?.headers?.get("retry-after");
-  const parsed = retryHeader ? Number(retryHeader) * 1000 : null;
+  let parsed = retryHeader ? Number(retryHeader) * 1000 : null;
+  if (!parsed && detail) {
+    const match = detail.match(/try again in ([\d\.]+)s/i) || detail.match(/in ([\d\.]+) seconds/i);
+    if (match && match[1]) {
+      const sec = parseFloat(match[1]);
+      if (!isNaN(sec) && sec > 0) parsed = Math.ceil(sec) * 1000;
+    }
+  }
   const configured = process.env.VAPT_LLM_RETRY_DELAY_MS ? Number(process.env.VAPT_LLM_RETRY_DELAY_MS) : undefined;
-  const fallback = process.env.NODE_ENV === "test" || process.env.VAPT_LLM_MODEL === "stub" ? 0 : 1000;
-  const delayMs = Math.min(parsed ?? configured ?? fallback, 30_000);
-  if (delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
+  const fallback = process.env.NODE_ENV === "test" || process.env.VAPT_LLM_MODEL === "stub" ? 0 : 2000;
+  const delayMs = Math.min(parsed ?? configured ?? fallback, 60_000);
+  if (delayMs > 0) {
+    if (process.env.NODE_ENV !== "test" && process.env.VAPT_LLM_MODEL !== "stub" && delayMs >= 3000) {
+      await countdownSpinner(Math.ceil(delayMs / 1000), "Rate limit cooldown — retrying in");
+    } else {
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
 }
 
-/** One chat completion against any OpenAI-compatible or Anthropic endpoint. One retry on network/429/5xx. */
+/** One chat completion against any OpenAI-compatible or Anthropic endpoint. Up to 3 retries on network/429/5xx. */
 export async function chat(messages: ChatMessage[]): Promise<string> {
   const timeoutMs = Number(process.env.VAPT_LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   const req = buildLlmRequest(messages, false);
   let lastErr: Error | null = null;
 
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     let res: Response;
     const timeout = withTimeoutSignal(timeoutMs);
     try {
@@ -172,7 +186,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
       const detail = (await res.text()).slice(0, 300);
       lastErr = new Error(`LLM HTTP ${res.status}: ${detail}`);
       if (RETRYABLE.has(res.status)) {
-        await waitRetry(res);
+        await waitRetry(res, detail);
         continue;
       }
       throw lastErr;
@@ -190,15 +204,15 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
   throw lastErr ?? new Error("LLM call failed");
 }
 
-/** Streaming chat completion (SSE). One connection-level retry on network/429/5xx; no retry once tokens flow. */
+/** Streaming chat completion (SSE). Connection-level retry on network/429/5xx; no retry once tokens flow. */
 export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<string> {
   const timeoutMs = Number(process.env.VAPT_LLM_TIMEOUT_MS) || DEFAULT_STREAM_TIMEOUT_MS;
   const req = buildLlmRequest(messages, true);
 
-  // Connection-level retry — same policy as chat(): one retry on network errors or retryable HTTP status.
+  // Connection-level retry — same policy as chat(): retries on network errors or retryable HTTP status.
   let res!: Response;
   let lastErr: Error | null = null;
-  for (let attempt = 0; attempt < 2; attempt++) {
+  for (let attempt = 0; attempt < 3; attempt++) {
     const timeout = withTimeoutSignal(timeoutMs);
     try {
       res = await fetch(req.url, {
@@ -218,7 +232,7 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
       const detail = (await res.text()).slice(0, 300);
       lastErr = new Error(`LLM HTTP ${res.status}: ${detail}`);
       if (RETRYABLE.has(res.status)) {
-        await waitRetry(res);
+        await waitRetry(res, detail);
         continue;
       }
       throw lastErr;

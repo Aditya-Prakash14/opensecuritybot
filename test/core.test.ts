@@ -13,7 +13,17 @@ import { ipv6RangeEntries, isInScope, scopeEntries } from "../src/scope-guard.js
 import { triageFindingJson } from "../src/triage.js";
 import { crossCheckCves, validateTriageResult } from "../src/verify.js";
 import { dataTag } from "../src/agent-prompt.js";
-import { box, formatTriageResult, progressBar, renderMarkdownLine, stripAnsi, visibleLength } from "../src/ui.js";
+import {
+  box,
+  findingHeader,
+  formatTriageResult,
+  progressBar,
+  renderAvatar,
+  renderHeroCard,
+  renderMarkdownLine,
+  stripAnsi,
+  visibleLength,
+} from "../src/ui.js";
 import { compareFindings, renderDiffHtml, renderDiffMarkdown } from "../src/diff.js";
 import {
   createWorkspace,
@@ -485,6 +495,37 @@ test("ui: formatTriageResult builds formatted boxed result card", () => {
   assert.ok(card.includes("likely true positive"));
   assert.ok(card.includes("manual review"));
 });
+
+test("ui: renderAvatar, renderHeroCard, and findingHeader format Claude Code style components", () => {
+  const avatar = renderAvatar("0.4.0");
+  assert.ok(avatar.includes("opensecuritybot"));
+  assert.ok(avatar.includes("v0.4.0"));
+  assert.ok(avatar.includes("SECURITY"));
+
+  const hero = renderHeroCard({
+    engagement: "ACME Corp",
+    inScopeCount: 5,
+    skippedCount: 1,
+    reportsDir: "./report",
+    model: "claude-sonnet-4-6",
+    provider: "Anthropic",
+  });
+  assert.ok(hero.includes("ACME Corp"));
+  assert.ok(hero.includes("5 in-scope"));
+  assert.ok(hero.includes("1 skipped"));
+  assert.ok(hero.includes("claude-sonnet-4-6"));
+
+  const header = findingHeader({
+    id: "F-1",
+    target: "https://example.com/api",
+    title: "SQL Injection",
+    severity: "critical",
+  });
+  assert.ok(header.includes("F-1"));
+  assert.ok(header.includes("SQL Injection"));
+  assert.ok(header.includes("CRITICAL"));
+});
+
 
 test("agent-prompt: dataTag wraps objects in tagged block", () => {
   const tagged = dataTag("scope", { engagement: "Test" });

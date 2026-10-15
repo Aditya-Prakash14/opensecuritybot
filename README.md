@@ -6,7 +6,7 @@
 
 ![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-34%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>

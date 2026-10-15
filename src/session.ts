@@ -7,9 +7,25 @@ import { loadFindings } from "./findings.js";
 import { type ChatMessage, chatStream } from "./llm.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
+import { loadConfig } from "./config.js";
 import { ensureConfigured } from "./setup.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson } from "./triage.js";
-import { bold, box, cyan, dim, formatTriageResult, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import {
+  bold,
+  box,
+  coral,
+  cyan,
+  dim,
+  formatTriageResult,
+  green,
+  red,
+  renderAvatar,
+  renderHeroCard,
+  severityColor,
+  spinner,
+  streamMarkdown,
+  yellow,
+} from "./ui.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
 
 export interface SessionOptions {
@@ -36,33 +52,41 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   }
   await ensureConfigured(); // first-run wizard when nothing is configured yet
 
+  const cfg = loadConfig();
   const state: SessionState = { findings: [], cache: loadCveCache(opts.cache), results: new Map(), history: [] };
+  let outOfScopeCount = 0;
 
-  let scopeNote: string;
   try {
     state.scope = loadScope(opts.scope);
-    scopeNote = `${dim("scope")}      ${state.scope.engagement ?? opts.scope}`;
   } catch {
-    scopeNote = `${dim("scope")}      ${yellow("none — pass -s or run `vapt init`")}`;
+    /* scope file not present */
   }
 
-  let findingsNote: string;
   try {
     const loaded = loadFindings(opts.findings);
     if (state.scope) {
       const { inScope, outOfScope } = filterInScope(loaded.findings, scopeEntries(state.scope));
       state.findings = sortBySeverity(inScope);
-      findingsNote = `${dim("findings")}   ${state.findings.length} in scope${outOfScope.length ? ` · ${yellow(`${outOfScope.length} skipped`)}` : ""}`;
+      outOfScopeCount = outOfScope.length;
     } else {
       state.findings = sortBySeverity(loaded.findings);
-      findingsNote = `${dim("findings")}   ${state.findings.length} loaded · ${yellow("no scope, /triage disabled")}`;
     }
   } catch {
-    findingsNote = `${dim("findings")}   ${yellow("none")} — drop scanner output at ${opts.findings}`;
+    /* findings file not present */
   }
 
-  process.stderr.write("\n" + box([scopeNote, findingsNote, `${dim("reports")}    ${opts.out}/`], "opensecuritybot · vapt-agent") + "\n");
-  process.stderr.write(`  ${dim("authorized engagements only · /help for commands · /exit to quit")}\n\n`);
+  process.stderr.write("\n" + renderAvatar() + "\n\n");
+  process.stderr.write(
+    renderHeroCard({
+      engagement: state.scope?.engagement,
+      inScopeCount: state.findings.length,
+      skippedCount: outOfScopeCount,
+      reportsDir: opts.out,
+      model: cfg?.model,
+      provider: cfg?.provider,
+    }) + "\n",
+  );
+  process.stderr.write(`  ${dim("authorized engagements only · type /help for commands · /exit to quit")}\n\n`);
 
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   const onSigint = () => {
@@ -73,7 +97,10 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     while (true) {
       let line: string;
       try {
-        line = (await rl.question(cyan("❯ "))).trim();
+        const engTitle = state.scope?.engagement ?? "engagement";
+        const promptBar = dim(`╭─ 🛡️  ${engTitle} · ${state.findings.length} findings · ${cfg?.model ?? "agent"} ─`);
+        process.stderr.write(`${promptBar}\n`);
+        line = (await rl.question(coral("╰─❯ "))).trim();
       } catch {
         break; // stdin closed (Ctrl+D)
       }
@@ -259,7 +286,7 @@ async function askAgent(question: string, state: SessionState): Promise<void> {
     const answer = await streamMarkdown(chatStream(messages), {
       onFirstChunk: () => {
         sp.stop();
-        process.stdout.write(cyan("⏺") + " ");
+        process.stdout.write(`${coral("⏺")} ${bold("opensecuritybot")}\n\n`);
       },
     });
     state.history.push({ role: "user", content: question }, { role: "assistant", content: answer });
