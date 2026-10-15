@@ -11,7 +11,6 @@ const TRIAGE_CONCURRENCY = 4;
 
 export interface ReportOutcome {
   markdown: string;
-  triaged: number;
   failures: string[];
 }
 
@@ -24,7 +23,7 @@ export async function buildReport(
   const { results, failures } = await triageAll(findings, ctx, log);
   if (results.length === 0) throw new Error("no finding could be triaged — no report produced");
   const markdown = await synthesize(findings, results, failures, ctx, log);
-  return { markdown, triaged: results.length, failures };
+  return { markdown, failures };
 }
 
 /** Up to TRIAGE_CONCURRENCY calls in flight; results keep input (severity) order. */

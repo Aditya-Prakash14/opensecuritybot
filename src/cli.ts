@@ -1,49 +1,13 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Command } from "commander";
 import { loadCveCache } from "./cve-cache.js";
+import { loadFindings } from "./findings.js";
 import { buildReport } from "./report.js";
-import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
+import { filterInScope, ipv6RangeEntries, loadScope, scopeEntries } from "./scope-guard.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdown } from "./triage.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
-
-const TARGET_KEYS = ["target", "host", "url", "endpoint", "matched_at", "matchedAt", "asset"];
-const ID_KEYS = ["id", "findingId", "template_id", "_id", "alertRef"];
-const MAX_RAW = 8000;
-
-function pickString(raw: Record<string, unknown>, keys: string[]): string | undefined {
-  return keys.map((k) => raw[k]).find((v): v is string => typeof v === "string" && v.trim().length > 0);
-}
-
-function normalizeFinding(raw: unknown, i: number): Finding | null {
-  if (!raw || typeof raw !== "object") return null;
-  const o = raw as Record<string, unknown>;
-  const target = pickString(o, TARGET_KEYS);
-  if (!target) return null;
-  const id = pickString(o, ID_KEYS) ?? `F-${i + 1}`;
-  const size = JSON.stringify(raw).length;
-  return { ...o, id, target, raw: size > MAX_RAW ? `[evidence omitted: ${size} bytes]` : raw };
-}
-
-function loadFindings(path: string): { findings: Finding[]; skipped: string[] } {
-  let data: unknown;
-  try {
-    data = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e) {
-    throw new Error(`${path}: not readable as JSON (${(e as Error).message})`);
-  }
-  const arr = Array.isArray(data) ? data : (data as { findings?: unknown })?.findings;
-  if (!Array.isArray(arr) || arr.length === 0) throw new Error(`${path}: expected a non-empty array or { "findings": [...] }`);
-  const findings: Finding[] = [];
-  const skipped: string[] = [];
-  arr.forEach((raw, i) => {
-    const f = normalizeFinding(raw, i);
-    if (f) findings.push(f);
-    else skipped.push(`entry #${i + 1}: no target/host/url field`);
-  });
-  return { findings, skipped };
-}
 
 interface Prepared {
   scope: Scope;
@@ -54,9 +18,14 @@ interface Prepared {
 /** Load + scope-filter. Anything outside scope.json is dropped here, before any LLM call. */
 function prepare(findingPath: string, scopePath: string, cacheDir: string): Prepared {
   const scope = loadScope(scopePath);
-  const { findings, skipped } = loadFindings(findingPath);
-  const { inScope, outOfScope } = filterInScope(findings, scopeEntries(scope));
+  const entries = scopeEntries(scope);
+  for (const e of ipv6RangeEntries(entries)) {
+    console.error(`warn: IPv6 range not matchable — findings on it will be skipped as out of scope: ${e}`);
+  }
+  const { findings, skipped, duplicates } = loadFindings(findingPath);
+  const { inScope, outOfScope } = filterInScope(findings, entries);
   for (const s of skipped) console.error(`skip: ${s}`);
+  for (const d of duplicates) console.error(`warn: duplicate finding id — ${d}`);
   for (const f of outOfScope) console.error(`skip: out of scope — ${f.id} (${f.target})`);
   if (inScope.length === 0) throw new Error("no in-scope findings to process");
   return { scope, findings: sortBySeverity(inScope), cache: loadCveCache(cacheDir) };
@@ -112,17 +81,24 @@ program
   .option("-o, --out <dir>", "report output directory", "./report")
   .action(async (opts: { findings: string; scope: string; cache: string; out: string }) => {
     const { scope, findings, cache } = prepare(opts.findings, opts.scope, opts.cache);
+    mkdirSync(opts.out, { recursive: true }); // fail fast: a bad --out path must not cost N+1 LLM calls
     console.error(`plan: report over ${findings.length} in-scope finding(s) — per-finding triage, then synthesis`);
     const outcome = await buildReport(findings, { scope, cache }, (msg) => console.error(msg));
-    mkdirSync(opts.out, { recursive: true });
-    const file = join(opts.out, `vapt-report-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")}.md`);
-    writeFileSync(file, outcome.markdown + "\n");
-    console.error(`saved: ${file}`);
-    process.stdout.write(outcome.markdown + "\n");
+    process.stdout.write(outcome.markdown + "\n"); // print before saving: a save failure must not discard the report
+    let saveFailed = false;
+    try {
+      const file = join(opts.out, `vapt-report-${new Date().toISOString().slice(0, 19).replace(/[:-]/g, "")}.md`);
+      writeFileSync(file, outcome.markdown + "\n");
+      console.error(`saved: ${file}`);
+    } catch (e) {
+      saveFailed = true;
+      console.error(`warn: could not save report (${(e as Error).message}) — printed above only`);
+    }
     if (outcome.failures.length > 0) {
       console.error(`${outcome.failures.length}/${findings.length} finding(s) failed triage: ${outcome.failures.join("; ")}`);
       process.exitCode = 1;
     }
+    if (saveFailed) process.exitCode = 1;
   });
 
 program.parseAsync().catch((e: unknown) => {

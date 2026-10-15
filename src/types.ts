@@ -9,8 +9,6 @@ export interface Finding {
   description?: string;
   severity?: string;
   tool?: string;
-  cve?: string[];
-  cwe?: string[];
   raw?: unknown;
   [k: string]: unknown;
 }

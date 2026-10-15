@@ -4,9 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { findCveIds, loadCveCache } from "../src/cve-cache.js";
+import { loadFindings } from "../src/findings.js";
 import { chat, parseJsonLoose } from "../src/llm.js";
 import { buildReport } from "../src/report.js";
-import { isInScope } from "../src/scope-guard.js";
+import { ipv6RangeEntries, isInScope, scopeEntries } from "../src/scope-guard.js";
 import { triageFindingJson } from "../src/triage.js";
 import { crossCheckCves, validateTriageResult } from "../src/verify.js";
 import type { Finding, TriageResult } from "../src/types.js";
@@ -27,6 +28,7 @@ function cacheDir(): string {
     }),
   );
   writeFileSync(join(dir, "misc.json"), JSON.stringify({ id: "CVE-2021-44228", description: "Log4Shell", cvss: 10 }));
+  writeFileSync(join(dir, "CVE-1999-0001.json"), "{ not valid json");
   return dir;
 }
 
@@ -40,14 +42,59 @@ test("scope: host, subdomain, wildcard, CIDR, out-of-scope", () => {
   assert.equal(isInScope("notexample.com", ENTRIES), false);
 });
 
-test("cve cache: loads NVD-shaped and flat files, dedupes ids", () => {
+test("scope: IPv6 hosts match, IPv6 ranges are reported, empty scope entries throw", () => {
+  assert.equal(isInScope("http://[2001:db8::10]:8080/x", ["2001:db8::10"]), true);
+  assert.equal(isInScope("2001:db8::1", ["2001:db8::1"]), true);
+  assert.equal(isInScope("2001:db8::1", ["2001:db8::2"]), false);
+  assert.deepEqual(ipv6RangeEntries(["2001:db8::/32", "example.com", "https://a.example.com/path"]), ["2001:db8::/32"]);
+  assert.throws(() => scopeEntries({ targets: [{ hostname: "example.com" }] }), /no matchable entries/);
+});
+
+test("cve cache: eager files, lazy CVE-named files, malformed skipped", () => {
   const idx = loadCveCache(cacheDir());
-  assert.equal(idx.get("CVE-2020-11022")?.cvss, 6.1);
+  assert.equal(idx.get("CVE-2020-11022")?.cvss, 6.1); // parsed on demand from the filename index
   assert.equal(idx.get("CVE-2020-11022")?.severity, "MEDIUM");
   assert.equal(idx.get("CVE-2020-11022")?.references.length, 1);
-  assert.equal(idx.get("CVE-2021-44228")?.description, "Log4Shell");
+  assert.equal(idx.get("CVE-2021-44228")?.description, "Log4Shell"); // flat file, parsed eagerly
   assert.equal(idx.get("CVE-2021-44228")?.cvss, 10);
+  assert.equal(idx.has("CVE-1999-0001"), false); // malformed file named by CVE id
   assert.deepEqual(findCveIds("see cve-2020-11022 and CVE-2020-11022"), ["CVE-2020-11022"]);
+});
+
+test("findings: alias targets, generated ids avoid collisions, duplicates reported", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-findings-"));
+  const file = join(dir, "findings.json");
+  writeFileSync(
+    file,
+    JSON.stringify([
+      { matched_at: "https://a.example.com", template_id: "t-1" },
+      { url: "https://b.example.com" },
+      { id: "F-2", target: "https://c.example.com" },
+      { title: "no target field" },
+    ]),
+  );
+  const out = loadFindings(file);
+  assert.equal(out.findings.length, 3);
+  assert.equal(out.findings[0]!.id, "t-1");
+  assert.equal(out.findings[0]!.target, "https://a.example.com");
+  assert.equal(out.findings[1]!.id, "F-1"); // generated, skips past nothing taken
+  assert.equal(out.findings[2]!.id, "F-2");
+  assert.match(out.skipped[0]!, /#4/);
+  assert.deepEqual(out.duplicates, []);
+
+  writeFileSync(
+    file,
+    JSON.stringify([
+      { id: "F-1", target: "https://a.example.com" },
+      { id: "F-1", target: "https://b.example.com" },
+      { target: "https://c.example.com" },
+    ]),
+  );
+  const dup = loadFindings(file);
+  assert.deepEqual(dup.duplicates, ["F-1"]);
+  assert.equal(dup.findings[2]!.id, "F-2"); // F-1 is taken by the input
+
+  assert.throws(() => loadFindings(join(dir, "missing.json")), /not readable/);
 });
 
 test("verify: valid result passes, bad enums throw", () => {
@@ -118,7 +165,6 @@ test("report: triages each finding, then synthesizes; failures are noted", async
     cache: loadCveCache(cacheDir()),
   });
   assert.equal(prompts.length, 3); // 2 triage + 1 synthesis
-  assert.equal(out.triaged, 1);
   assert.equal(out.failures.length, 1);
   assert.match(out.failures[0]!, /F-B/);
   assert.equal(out.markdown, "REPORT MD");
@@ -160,4 +206,19 @@ test("chat: retries once on 429, fails fast on other HTTP errors", async (t) => 
   globalThis.fetch = (async () => (calls++, reply(400, ""))) as typeof fetch;
   await assert.rejects(() => chat([{ role: "user", content: "hi" }]), /LLM HTTP 400/);
   assert.equal(calls, 1);
+});
+
+test("chat: aborts stalled requests via VAPT_LLM_TIMEOUT_MS", async (t) => {
+  process.env.VAPT_LLM_MODEL = "stub";
+  process.env.VAPT_LLM_TIMEOUT_MS = "20";
+  const orig = globalThis.fetch;
+  t.after(() => {
+    globalThis.fetch = orig;
+    delete process.env.VAPT_LLM_TIMEOUT_MS;
+  });
+  globalThis.fetch = ((_url: unknown, init: { signal: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      init.signal.addEventListener("abort", () => reject(init.signal.reason));
+    })) as typeof fetch;
+  await assert.rejects(() => chat([{ role: "user", content: "hi" }]), /timeout/i);
 });

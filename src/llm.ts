@@ -1,16 +1,18 @@
-export interface ChatMessage {
+interface ChatMessage {
   role: "system" | "user";
   content: string;
 }
 
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const DEFAULT_BASE = "https://api.openai.com/v1";
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 /** One chat completion against any OpenAI-compatible endpoint. One retry on network/429/5xx. */
 export async function chat(messages: ChatMessage[]): Promise<string> {
   const base = (process.env.VAPT_LLM_BASE_URL ?? DEFAULT_BASE).replace(/\/+$/, "");
   const model = process.env.VAPT_LLM_MODEL;
   const key = process.env.VAPT_LLM_API_KEY;
+  const timeoutMs = Number(process.env.VAPT_LLM_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
   if (!model) throw new Error("VAPT_LLM_MODEL is not set (e.g. gpt-4o-mini, llama3.1, anthropic/claude-sonnet)");
 
   const body = JSON.stringify({ model, messages, temperature: 0.2 });
@@ -26,9 +28,10 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
           ...(key ? { authorization: `Bearer ${key}` } : {}),
         },
         body,
+        signal: AbortSignal.timeout(timeoutMs),
       });
     } catch (e) {
-      lastErr = e instanceof Error ? e : new Error(String(e)); // network error — retry
+      lastErr = e instanceof Error ? e : new Error(String(e)); // network error or timeout — retry
       continue;
     }
     if (!res.ok) {

@@ -13,7 +13,7 @@
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc",
-    "start": "node dist/cli.js",
+    "prepare": "tsc",
     "test": "node --import tsx --test test/core.test.ts"
   },
   "dependencies": {

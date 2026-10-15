@@ -32,18 +32,28 @@ export function scopeEntries(scope: Scope): string[] {
     }
   }
   out.delete("");
+  if (out.size === 0) {
+    throw new Error(
+      "scope produced no matchable entries — expected string targets or objects with host/ip/url/domain/name/cidr/target keys",
+    );
+  }
   return [...out];
 }
 
-export function hostOf(value: string): string {
+/** IPv6 ranges the matcher cannot handle yet — callers should warn instead of skipping silently. */
+export function ipv6RangeEntries(entries: string[]): string[] {
+  return entries.filter((e) => e.includes(":") && /^\[?[0-9a-f:]+\]?\/\d+$/i.test(e.trim()));
+}
+
+function hostOf(value: string): string {
   const v = value.trim();
   try {
     const u = new URL(v);
-    if (u.hostname) return u.hostname.toLowerCase();
+    if (u.hostname) return unbracket(u.hostname).toLowerCase();
   } catch {
     /* not a URL — fall through */
   }
-  return v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!.replace(/:\d+$/, "").toLowerCase();
+  return unbracket(stripPort(v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!)).toLowerCase();
 }
 
 export function isInScope(target: string, entries: string[]): boolean {
@@ -77,12 +87,24 @@ export function filterInScope(findings: Finding[], entries: string[]): { inScope
 }
 
 function hostPattern(entry: string): string {
-  return entry
-    .trim()
-    .toLowerCase()
-    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
-    .split("/")[0]!
-    .replace(/:\d+$/, "");
+  return unbracket(
+    stripPort(
+      entry
+        .trim()
+        .toLowerCase()
+        .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
+        .split("/")[0]!,
+    ),
+  );
+}
+
+/** Strip a trailing :port — but never from IPv6-shaped values (more than one colon). */
+function stripPort(value: string): string {
+  return (value.match(/:/g)?.length ?? 0) > 1 ? value : value.replace(/:\d+$/, "");
+}
+
+function unbracket(value: string): string {
+  return value.replace(/^\[/, "").replace(/\]$/, "");
 }
 
 function ipv4num(host: string): number | null {

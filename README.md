@@ -25,6 +25,7 @@ npm install
 export VAPT_LLM_BASE_URL=https://api.openai.com/v1   # default; use http://localhost:11434/v1 for Ollama
 export VAPT_LLM_MODEL=gpt-4o-mini                    # any model your endpoint serves
 export VAPT_LLM_API_KEY=sk-...                       # omit for local models
+export VAPT_LLM_TIMEOUT_MS=120000                    # optional per-request timeout (default 120000)
 ```
 
 ## Usage
@@ -63,7 +64,10 @@ to triage — partial results are still emitted.
 | `report/`     | generated reports (gitignored)                                      |
 
 Findings whose `target` is not in scope are skipped with a stderr note, never sent to the
-model. `raw`/`evidence` blobs larger than 8 KB are replaced with a size placeholder.
+model. `raw`/`evidence` blobs larger than 8 KB are replaced with a size placeholder. Cache
+files named `CVE-XXXX-XXXX.json` are indexed by name and read only when a finding references
+that CVE, so a full NVD-sized cache stays cheap. IPv6 ranges in `scope.json` cannot be
+matched yet — a warning is printed; list IPv6 hosts individually.
 
 ## The verify step
 
