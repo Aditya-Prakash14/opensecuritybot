@@ -36,7 +36,7 @@ function prepare(findingPath: string, scopePath: string, cacheDir: string): Prep
 const program = new Command();
 program
   .name("vapt")
-  .version("0.2.0")
+  .version("0.3.0")
   .description("VAPT-Agent — triage, explain and report scanner findings (authorized engagements only)")
   .option("-f, --findings <path>", "findings JSON for the interactive session", "./findings.json")
   .option("-s, --scope <path>", "confirmed scope file", "./scope.json")
@@ -90,7 +90,7 @@ program
     let failed = 0;
     for (const f of queue) {
       if (opts.json) {
-        const sp = spinner(`triaging ${f.id} (${f.severity ?? "?"})...`);
+        const sp = spinner(`Triaging ${f.id} (${f.severity ?? "?"})`);
         try {
           results.push(await triageFindingJson(f, ctx));
           sp.stop();
@@ -101,11 +101,14 @@ program
         }
       } else {
         process.stdout.write(`\n${bold(f.id)} — ${f.title ?? f.target} ${severityColor(f.severity)(`[${f.severity ?? "unknown"}]`)}\n\n`);
+        const sp = spinner(`Triaging ${f.id}`);
         try {
-          await streamMarkdown(triageFindingMarkdownStream(f, ctx));
+          await streamMarkdown(triageFindingMarkdownStream(f, ctx), { onFirstChunk: () => sp.stop() });
         } catch (e) {
           failed++;
           console.error(red(`fail: ${f.id}: ${(e as Error).message}`));
+        } finally {
+          sp.stop();
         }
         process.stdout.write("\n");
       }

@@ -63,13 +63,15 @@ partial results are still emitted.
 
 ## Interactive mode
 
-`vapt` with no command starts a session (needs a TTY):
+`vapt` with no command starts a Claude-Code-style session (needs a TTY): a welcome card,
+an animated thinking indicator with elapsed time, answers streamed under a `⏺` marker,
+and boxed triage cards.
 
 ```
-vapt> /triage F-3        triage one finding, or all with /triage
-vapt> /findings          the in-scope queue, severity-descending
-vapt> /report            compile the full VAPT report and save it
-vapt> why is F-2 exploitable in our context?
+❯ /triage F-3        triage one finding, or all with /triage
+❯ /findings          the in-scope queue, severity-descending
+❯ /report            compile the full VAPT report and save it
+❯ why is F-2 exploitable in our context?
 ```
 
 Free-form questions stream answers from the agent, grounded in the loaded scope, findings

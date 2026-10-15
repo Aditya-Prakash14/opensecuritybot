@@ -10,6 +10,7 @@ import { buildReport } from "../src/report.js";
 import { ipv6RangeEntries, isInScope, scopeEntries } from "../src/scope-guard.js";
 import { triageFindingJson } from "../src/triage.js";
 import { crossCheckCves, validateTriageResult } from "../src/verify.js";
+import { box, stripAnsi, visibleLength } from "../src/ui.js";
 import type { Finding, TriageResult } from "../src/types.js";
 
 const ENTRIES = ["example.com", "*.api.example.com", "10.10.0.0/24"];
@@ -245,4 +246,20 @@ test("chatStream: yields SSE deltas until [DONE]", async (t) => {
   const chunks: string[] = [];
   for await (const chunk of chatStream([{ role: "user", content: "hi" }])) chunks.push(chunk);
   assert.equal(chunks.join(""), "Hello");
+});
+
+test("ui: box aligns borders and measures colored text", () => {
+  const colored = "\x1b[31mred\x1b[0m";
+  assert.equal(stripAnsi(colored), "red");
+  assert.equal(visibleLength(colored), 3);
+
+  const out = box(["short", colored], "title");
+  const rows = out.split("\n");
+  assert.equal(rows.length, 4);
+  const widths = new Set(rows.map((r) => stripAnsi(r).length));
+  assert.equal(widths.size, 1, "all box rows must render at the same width");
+  assert.ok(stripAnsi(rows[0]!).includes(" title "));
+
+  const plain = box(["only"]);
+  assert.equal(new Set(plain.split("\n").map((r) => r.length)).size, 1);
 });

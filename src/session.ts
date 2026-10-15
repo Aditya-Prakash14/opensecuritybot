@@ -6,7 +6,7 @@ import { type ChatMessage, chatStream } from "./llm.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson } from "./triage.js";
-import { bold, cyan, dim, formatTriageResult, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import { bold, box, cyan, dim, formatTriageResult, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
 
 export interface SessionOptions {
@@ -24,48 +24,48 @@ interface SessionState {
   history: ChatMessage[];
 }
 
-/** Interactive Claude-Code-style session: slash commands plus free-form questions about the queue. */
+const padCmd = (s: string): string => s.padEnd(15);
+
+/** Interactive Claude-Code-style session: welcome card, slash commands, streamed answers. */
 export async function startSession(opts: SessionOptions): Promise<void> {
   if (!process.stdin.isTTY) {
     throw new Error("interactive mode needs a TTY — for scripts use `vapt triage -f <findings> -s <scope.json>`");
   }
 
   const state: SessionState = { findings: [], cache: loadCveCache(opts.cache), results: new Map(), history: [] };
-  const notes: string[] = [];
 
+  let scopeNote: string;
   try {
     state.scope = loadScope(opts.scope);
+    scopeNote = `${dim("scope")}      ${state.scope.engagement ?? opts.scope}`;
   } catch {
-    notes.push(`${dim("scope:")} ${yellow("none")} — pass -s or run \`vapt init\``);
+    scopeNote = `${dim("scope")}      ${yellow("none — pass -s or run `vapt init`")}`;
   }
+
+  let findingsNote: string;
   try {
     const loaded = loadFindings(opts.findings);
     if (state.scope) {
       const { inScope, outOfScope } = filterInScope(loaded.findings, scopeEntries(state.scope));
       state.findings = sortBySeverity(inScope);
-      notes.push(
-        outOfScope.length
-          ? `${dim("findings:")} ${state.findings.length} in scope, ${yellow(`${outOfScope.length} skipped`)} (out of scope)`
-          : `${dim("findings:")} ${state.findings.length} in scope`,
-      );
+      findingsNote = `${dim("findings")}   ${state.findings.length} in scope${outOfScope.length ? ` · ${yellow(`${outOfScope.length} skipped`)}` : ""}`;
     } else {
       state.findings = sortBySeverity(loaded.findings);
-      notes.push(`${dim("findings:")} ${state.findings.length} loaded — ${yellow("no scope, /triage disabled")}`);
+      findingsNote = `${dim("findings")}   ${state.findings.length} loaded · ${yellow("no scope, /triage disabled")}`;
     }
   } catch {
-    notes.push(`${dim("findings:")} ${yellow("none")} — run \`vapt init\` and drop scanner output at ${opts.findings}`);
+    findingsNote = `${dim("findings")}   ${yellow("none")} — drop scanner output at ${opts.findings}`;
   }
 
-  process.stderr.write(`\n  ${bold(cyan("opensecuritybot"))} ${dim("· vapt-agent · authorized engagements only")}\n\n`);
-  for (const n of notes) process.stderr.write(`  ${n}\n`);
-  process.stderr.write(`  ${dim("/help for commands · /exit to quit · anything else asks the agent")}\n\n`);
+  process.stderr.write("\n" + box([scopeNote, findingsNote, `${dim("reports")}    ${opts.out}/`], "opensecuritybot · vapt-agent") + "\n");
+  process.stderr.write(`  ${dim("authorized engagements only · /help for commands · /exit to quit")}\n\n`);
 
   const rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
     while (true) {
       let line: string;
       try {
-        line = (await rl.question(cyan("vapt> "))).trim();
+        line = (await rl.question(cyan("❯ "))).trim();
       } catch {
         break; // stdin closed (Ctrl+D)
       }
@@ -89,15 +89,20 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
   switch (cmd) {
     case "help":
       process.stdout.write(
-        [
-          `${bold("/triage")} [id]   triage all in-scope findings, or one by id`,
-          `${bold("/findings")}       list the in-scope queue`,
-          `${bold("/scope")}          show the confirmed scope targets`,
-          `${bold("/report")}         compile the full VAPT report (re-triages all findings)`,
-          `${bold("/help")} ${bold("/exit")}      this help / leave`,
-          "",
-          "Anything else is a question for the agent about the loaded engagement.",
-        ].join("\n") + "\n",
+        "\n" +
+          box(
+            [
+              `${bold(padCmd("/triage [id]"))}triages all in-scope findings, or one by id`,
+              `${bold(padCmd("/findings"))}the in-scope queue, severity-descending`,
+              `${bold(padCmd("/scope"))}the confirmed engagement targets`,
+              `${bold(padCmd("/report"))}compile the full VAPT report and save it`,
+              `${bold(padCmd("/help"))}this help · ${bold("/exit")} leaves`,
+              "",
+              "Anything else is a question for the agent about the loaded engagement.",
+            ],
+            "commands",
+          ) +
+          "\n\n",
       );
       return;
 
@@ -106,8 +111,9 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         process.stderr.write(yellow("no scope.json loaded\n"));
         return;
       }
-      process.stdout.write(`${bold("engagement")} ${state.scope.engagement ?? "—"}\n`);
-      for (const e of scopeEntries(state.scope)) process.stdout.write(`  • ${e}\n`);
+      const rows = [`${bold("engagement")} ${state.scope.engagement ?? "—"}`, ""];
+      for (const e of scopeEntries(state.scope)) rows.push(`• ${e}`);
+      process.stdout.write("\n" + box(rows, "scope") + "\n\n");
       return;
     }
 
@@ -137,13 +143,13 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
       }
       const ctx: TriageCtx = { scope: state.scope, cache: state.cache };
       for (const f of queue) {
-        const sp = spinner(`triaging ${f.id} (${f.severity ?? "?"})...`);
+        const sp = spinner(`Triaging ${f.id} (${f.severity ?? "?"})`);
         try {
           const r = await triageFindingJson(f, ctx);
           state.results.set(f.id, r);
           sp.stop();
           process.stdout.write(
-            `\n${bold(f.id)} — ${f.title ?? f.target} ${severityColor(f.severity)(`[${f.severity ?? "unknown"}]`)}\n\n${formatTriageResult(r)}\n`,
+            `\n${cyan("⏺")} ${bold(f.id)} — ${f.title ?? f.target} ${severityColor(f.severity)(`[${f.severity ?? "unknown"}]`)}\n\n${formatTriageResult(r)}\n`,
           );
         } catch (e) {
           sp.stop(red(`fail: ${f.id}: ${(e as Error).message}`));
@@ -199,7 +205,17 @@ async function askAgent(question: string, state: SessionState): Promise<void> {
     { role: "user", content: `${context}\n\n<question>\n${question}\n</question>` },
   ];
   process.stdout.write("\n");
-  const answer = await streamMarkdown(chatStream(messages));
-  state.history.push({ role: "user", content: question }, { role: "assistant", content: answer });
+  const sp = spinner("Thinking");
+  try {
+    const answer = await streamMarkdown(chatStream(messages), {
+      onFirstChunk: () => {
+        sp.stop();
+        process.stdout.write(cyan("⏺") + " ");
+      },
+    });
+    state.history.push({ role: "user", content: question }, { role: "assistant", content: answer });
+  } finally {
+    sp.stop();
+  }
   process.stdout.write("\n");
 }
