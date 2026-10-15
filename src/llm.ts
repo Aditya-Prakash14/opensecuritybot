@@ -10,6 +10,17 @@ const DEFAULT_BASE = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
 
+function withTimeoutSignal(timeoutMs: number): { signal: AbortSignal; done: () => void } {
+  const controller = new AbortController();
+  const timer = setTimeout(() => {
+    controller.abort(new Error(`LLM request timeout after ${timeoutMs}ms`));
+  }, timeoutMs);
+  return {
+    signal: controller.signal,
+    done: () => clearTimeout(timer),
+  };
+}
+
 function llmConfig(): {
   base: string;
   model: string;
@@ -142,17 +153,20 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
 
   for (let attempt = 0; attempt < 2; attempt++) {
     let res: Response;
+    const timeout = withTimeoutSignal(timeoutMs);
     try {
       res = await fetch(req.url, {
         method: "POST",
         headers: req.headers,
         body: req.body,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: timeout.signal,
       });
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e)); // network error or timeout — retry
       await waitRetry();
       continue;
+    } finally {
+      timeout.done();
     }
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
@@ -185,17 +199,20 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
   let res!: Response;
   let lastErr: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt++) {
+    const timeout = withTimeoutSignal(timeoutMs);
     try {
       res = await fetch(req.url, {
         method: "POST",
         headers: req.headers,
         body: req.body,
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: timeout.signal,
       });
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
       await waitRetry();
       continue;
+    } finally {
+      timeout.done();
     }
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
