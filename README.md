@@ -1,4 +1,15 @@
-# opensecuritybot — VAPT-Agent
+<div align="center">
+
+# opensecuritybot
+
+**VAPT-Agent — the reasoning layer between your scanner and your report.**
+
+![version](https://img.shields.io/badge/version-0.4.0-blue)
+![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
+![tests](https://img.shields.io/badge/tests-15%20passing-brightgreen)
+![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
+
+</div>
 
 Local CLI reasoning layer for **authorized** vulnerability assessment and penetration-test
 engagements. It does not scan, exploit, or generate payloads — that happens upstream (nmap,
@@ -6,11 +17,33 @@ Nuclei, OWASP ZAP, …). It takes their normalized output plus the operator-conf
 `scope.json` and turns it into triage calls, plain-language explanations, remediation steps
 and full VAPT reports via any OpenAI-compatible LLM.
 
-Boundaries are enforced in two places:
+```mermaid
+flowchart LR
+    F["findings.json"] --> SG{"scope-guard"}
+    S["scope.json"] --> SG
+    SG -- "out of scope" --> SK["skipped (stderr)"]
+    SG -- "in scope" --> T["triage per finding"]
+    T --> V["verify: schema + CVE cache"]
+    V --> J["--json / streamed markdown"]
+    V --> R["report synthesis (sections 1-5)"]
+```
 
-- `src/scope-guard.ts` — anything outside `scope.json` is dropped **before an LLM ever sees it**.
-- `src/agent-prompt.ts` — the agent system prompt: no exploit content, no fabricated
-  CVE/CVSS/advisory references, scanner output is treated as data and never as instructions.
+> [!IMPORTANT]
+> Authorized engagements only. Anything outside `scope.json` is dropped **before an LLM ever
+> sees it** (`src/scope-guard.ts`), and the agent system prompt (`src/agent-prompt.ts`)
+> forbids exploit content, fabricated CVE/CVSS references, and treating scanner output as
+> instructions.
+
+[What you get](#what-you-get) · [Install](#install-and-first-run) · [Quickstart](#quickstart-with-the-demo) · [Real engagement](#a-real-engagement) · [Commands](#command-reference) · [Session](#interactive-session) · [Config](#configuration) · [Architecture](#architecture) · [Limitations](#design-notes-and-limitations)
+
+## What you get
+
+- 🎯 **Scope-safe by construction** — non-authorized findings never reach the model.
+- 🧠 **Triage, not transcription** — true/false-positive calls, contextual severity, OWASP Top 10 (2021) mapping.
+- ✅ **Deterministic verify** — every programmatic reply is schema-checked and every cited CVE is cross-checked against your local cache.
+- 📄 **Reports that ship** — executive summary through prioritized remediation roadmap, sections 1–5.
+- 💬 **Two ways to work** — a Claude-Code-style interactive session, or one-shot commands with `--json` for pipelines.
+- 🔌 **Any provider** — OpenRouter, Groq, OpenAI, Meta, Anthropic, Ollama… guided by a first-run wizard.
 
 ## Requirements
 
@@ -18,7 +51,7 @@ Boundaries are enforced in two places:
 - An OpenAI-compatible chat-completions endpoint (OpenAI, OpenRouter, Groq, Meta Model API,
   Anthropic, Ollama, LM Studio, vLLM, …)
 
-## Install & first run
+## Install and first run
 
 ```sh
 npm install
@@ -31,17 +64,18 @@ npm run dev -- setup           # or: vapt setup
 provider's `/models` endpoint; if that fails, a curated list is offered and you can always
 paste any model id.
 
-| Provider     | Base URL used                        |
-| ------------ | ------------------------------------ |
-| OpenRouter   | `https://openrouter.ai/api/v1`       |
-| Groq         | `https://api.groq.com/openai/v1`     |
-| OpenAI       | `https://api.openai.com/v1`          |
-| Meta         | `https://api.meta.ai/v1`             |
-| Anthropic    | `https://api.anthropic.com/v1`       |
-| Custom       | anything OpenAI-compatible (e.g. `http://localhost:11434/v1` for Ollama) |
+| Provider | Base URL used |
+| -------- | ------------- |
+| OpenRouter | `https://openrouter.ai/api/v1` |
+| Groq | `https://api.groq.com/openai/v1` |
+| OpenAI | `https://api.openai.com/v1` |
+| Meta | `https://api.meta.ai/v1` |
+| Anthropic | `https://api.anthropic.com/v1` |
+| Custom | anything OpenAI-compatible (e.g. `http://localhost:11434/v1` for Ollama) |
 
-Running `vapt`, `triage` or `report` with nothing configured starts the wizard automatically
-(TTY only — headless runs must use env vars, see [Configuration](#configuration)).
+> [!NOTE]
+> Running `vapt`, `triage` or `report` with nothing configured starts the wizard
+> automatically (TTY only — headless runs must use env vars, see [Configuration](#configuration)).
 
 ## Quickstart with the demo
 
@@ -59,24 +93,24 @@ mkdir acme && cd acme
 vapt init                      # writes scope.json, cve-cache/, report/
 ```
 
-1. **Edit `scope.json`** — the authorized targets:
+**1. Edit `scope.json`** — the authorized targets:
 
-   ```json
-   { "engagement": "Acme Q4", "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"] }
-   ```
+```json
+{ "engagement": "Acme Q4", "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"] }
+```
 
-   Matches exact hosts, subdomains, `*.wildcards` and IPv4 CIDR ranges. IPv6 hosts match
-   individually; IPv6 *ranges* are warned about and skipped.
+Matches exact hosts, subdomains, `*.wildcards` and IPv4 CIDR ranges. IPv6 hosts match
+individually; IPv6 *ranges* are warned about and skipped.
 
-2. **Drop scanner output at `findings.json`** — an array or `{ "findings": [...] }`, straight
-   from Nuclei/ZAP/nmap. Targets are picked up from `target`, `host`, `url`, `endpoint`,
-   `matched_at`, `matchedAt` or `asset`; ids from `id`, `findingId`, `template_id`, `_id` or
-   `alertRef`. Missing ids get `F-N` (collision-safe); duplicate ids are warned about; `raw`
-   evidence over 8 KB is replaced with a placeholder.
+**2. Drop scanner output at `findings.json`** — an array or `{ "findings": [...] }`, straight
+from Nuclei/ZAP/nmap. Targets are picked up from `target`, `host`, `url`, `endpoint`,
+`matched_at`, `matchedAt` or `asset`; ids from `id`, `findingId`, `template_id`, `_id` or
+`alertRef`. Missing ids get `F-N` (collision-safe); duplicate ids are warned about; `raw`
+evidence over 8 KB is replaced with a placeholder.
 
-3. **Optionally fill `cve-cache/`** — NVD JSON files (NVD 2.0 shape or flat
-   `{id, description, cvss}`). Files named `CVE-XXXX-XXXX.json` are indexed by name and read
-   only when a finding references that CVE, so a full NVD-sized cache stays cheap.
+**3. Optionally fill `cve-cache/`** — NVD JSON files (NVD 2.0 shape or flat
+`{id, description, cvss}`). Files named `CVE-XXXX-XXXX.json` are indexed by name and read
+only when a finding references that CVE, so a full NVD-sized cache stays cheap.
 
 ## Command reference
 
@@ -95,19 +129,41 @@ thinking indicator with elapsed time, answers streamed under a `⏺` marker, and
 cards.
 
 ```
-❯ /triage F-3            triage one finding (or /triage for the whole queue)
-❯ /findings              the in-scope queue, severity-descending, triaged/queued
-❯ /scope                 the confirmed engagement targets
-❯ /report                compile the full VAPT report and save it
-❯ why is F-2 exploitable in our context?
-❯ what should I fix first if we only have one day?
+╭─ opensecuritybot · vapt-agent ──────────────────╮
+│ scope      Example Corp external web assessment │
+│ findings   3 in scope · 1 skipped               │
+│ reports    ./report/                            │
+╰─────────────────────────────────────────────────╯
+
+❯ what should I fix first?
+
+✻ Thinking… (2s)
+
+⏺ Start with the exposed .git/config — it is the only high-severity finding…
+
+❯ /triage F-2
+
+⏺ F-2 — Outdated jQuery (1.12.4) [medium]
+
+╭─ F-2 · medium · A06:2021 ──────────────────────────────────╮
+│ triage     likely true positive · confidence high          │
+│ reasoning  …                                               │
+│ remediation — …                                            │
+╰────────────────────────────────────────────────────────────╯
 ```
 
-Slash commands run tooling; **anything else is a question** answered by the agent,
-streamed, grounded in the loaded scope, findings and triage results so far. `/help` lists
-commands, `/exit` leaves.
+| Slash command | Action |
+| ------------- | ------ |
+| `/triage [id]` | triage one finding by id, or the whole queue |
+| `/findings` | the in-scope queue, severity-descending, triaged/queued |
+| `/scope` | the confirmed engagement targets |
+| `/report` | compile the full VAPT report and save it |
+| `/help`, `/exit` | list commands / leave |
 
-## One-shot usage (scripts, CI, piping)
+**Anything else is a question** answered by the agent, streamed, grounded in the loaded
+scope, findings and triage results so far.
+
+## One-shot usage
 
 ```sh
 # streamed markdown, one block per finding
@@ -124,7 +180,8 @@ vapt triage -f findings.json -s scope.json --id F-2
 vapt report -f findings.json -s scope.json -c cve-cache/ -o report/
 ```
 
-The JSON schema per finding:
+<details>
+<summary><b>JSON schema per finding</b> (click to expand)</summary>
 
 ```json
 {
@@ -142,8 +199,10 @@ The JSON schema per finding:
 }
 ```
 
-**Output contract:** chrome (plan, skips, warnings, spinners, progress) goes to **stderr**;
-data (markdown, JSON, listings) goes to **stdout** — so `--json` is always pipe-safe. Exit
+</details>
+
+**Output contract** — chrome (plan, skips, warnings, spinners, progress) goes to **stderr**;
+data (markdown, JSON, listings) goes to **stdout**, so `--json` is always pipe-safe. Exit
 code is `1` if any finding failed; partial results are still emitted.
 
 ## Configuration
@@ -159,8 +218,9 @@ directory). Environment variables take precedence over the file:
 | `VAPT_LLM_TIMEOUT_MS` | `120000` | per-request cap; streaming defaults to `300000` |
 | `VAPT_LLM_TEMPERATURE` | not sent | only included when set — newer Claude models reject values below 1 |
 
-For sensitive engagements, point the base URL at a local model (Ollama:
-`http://localhost:11434/v1`) — finding evidence goes to whichever endpoint is configured.
+> [!TIP]
+> For sensitive engagements, point the base URL at a local model (Ollama:
+> `http://localhost:11434/v1`) — finding evidence goes to whichever endpoint is configured.
 
 ## The verify step
 
@@ -170,6 +230,9 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 `unverified — confirm manually` note. Keep your cache fresh for best results.
 
 ## Architecture
+
+<details>
+<summary><b>Source file map</b> (click to expand)</summary>
 
 | File | Role |
 | ---- | ---- |
@@ -187,6 +250,8 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 | `src/ui.ts` | zero-dependency ANSI, spinner, boxes, markdown rendering |
 | `src/agent-prompt.ts` | system prompt + prompt-building helpers |
 
+</details>
+
 ## Tests
 
 ```sh
@@ -194,13 +259,13 @@ npm test        # 15 tests: scope, cache, verify, report pipeline, retry/timeout
                 # streaming, config, CLI parsing regression
 ```
 
-## Design notes & limitations
+## Design notes and limitations
 
 - `report` triages each finding individually (up to 4 calls in flight), then one synthesis
   call assembles sections 1–5 — cost is N+1 LLM calls. Failed findings are listed as
   "not triaged — processing error" and the run exits non-zero.
-- Triage calls include full evidence; the synthesis pass receives findings with `raw` stripped.
-  The report is printed before it is saved — a save failure never discards the output.
+- Triage calls include full evidence; the synthesis pass receives findings with `raw`
+  stripped. The report is printed before it is saved — a save failure never discards output.
 - Streaming has no retry once tokens have started; re-ask if the connection drops mid-answer.
 - IPv6 CIDR ranges in `scope.json` are not matchable yet (a warning is printed instead of a
   silent skip); list IPv6 hosts individually.
