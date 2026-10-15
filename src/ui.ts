@@ -55,6 +55,16 @@ export function box(lines: string[], title?: string): string {
   return rows.map(dim).join("\n");
 }
 
+/** Simple ASCII/ANSI progress bar: [████████░░░░░░░░] 50% (5/10) */
+export function progressBar(current: number, total: number, width = 20): string {
+  const ratio = total > 0 ? Math.min(1, Math.max(0, current / total)) : 0;
+  const filled = Math.round(ratio * width);
+  const empty = width - filled;
+  const bar = `${green("█".repeat(filled))}${dim("░".repeat(empty))}`;
+  const pct = Math.round(ratio * 100);
+  return `[${bar}] ${pct}% (${current}/${total})`;
+}
+
 const starFrames = ["✻", "✽", "✾", "✳", "✢"];
 
 /** Claude-style thinking indicator on stderr: ✻ verb… (Ns). No-op on non-TTY. */

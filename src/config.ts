@@ -1,12 +1,22 @@
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import process from "node:process";
+
+try {
+  if (typeof process.loadEnvFile === "function") {
+    process.loadEnvFile();
+  }
+} catch {
+  /* ignore missing or inaccessible .env */
+}
 
 export interface VaptConfig {
   provider: string;
   baseUrl: string;
   model: string;
   apiKey?: string;
+  activeWorkspace?: string;
 }
 
 export function configDir(): string {

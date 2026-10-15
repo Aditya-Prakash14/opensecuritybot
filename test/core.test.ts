@@ -4,15 +4,24 @@ import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { findCveIds, loadCveCache } from "../src/cve-cache.js";
+import { fetchNvdCve, findCveIds, loadCveCache, prefetchMissingCves } from "../src/cve-cache.js";
 import { loadConfig, saveConfig } from "../src/config.js";
-import { loadFindings } from "../src/findings.js";
-import { chat, chatStream, parseJsonLoose } from "../src/llm.js";
-import { buildReport } from "../src/report.js";
+import { deduplicateFindings, loadFindings } from "../src/findings.js";
+import { buildLlmRequest, chat, chatStream, estimateMessageTokens, estimateTokens, parseJsonLoose } from "../src/llm.js";
+import { buildReport, markdownToHtml, renderReportHtml } from "../src/report.js";
 import { ipv6RangeEntries, isInScope, scopeEntries } from "../src/scope-guard.js";
 import { triageFindingJson } from "../src/triage.js";
 import { crossCheckCves, validateTriageResult } from "../src/verify.js";
-import { box, stripAnsi, visibleLength } from "../src/ui.js";
+import { dataTag } from "../src/agent-prompt.js";
+import { box, formatTriageResult, progressBar, renderMarkdownLine, stripAnsi, visibleLength } from "../src/ui.js";
+import { compareFindings, renderDiffHtml, renderDiffMarkdown } from "../src/diff.js";
+import {
+  createWorkspace,
+  getActiveWorkspace,
+  listWorkspaces,
+  resolveWorkspacePath,
+  setActiveWorkspace,
+} from "../src/workspace.js";
 import type { Finding, TriageResult } from "../src/types.js";
 
 const ENTRIES = ["example.com", "*.api.example.com", "10.10.0.0/24"];
@@ -51,6 +60,23 @@ test("scope: IPv6 hosts match, IPv6 ranges are reported, empty scope entries thr
   assert.equal(isInScope("2001:db8::1", ["2001:db8::2"]), false);
   assert.deepEqual(ipv6RangeEntries(["2001:db8::/32", "example.com", "https://a.example.com/path"]), ["2001:db8::/32"]);
   assert.throws(() => scopeEntries({ targets: [{ hostname: "example.com" }] }), /no matchable entries/);
+});
+
+test("scope: IPv6 CIDR range matching", () => {
+  assert.equal(isInScope("2001:db8::1", ["2001:db8::/32"]), true);
+  assert.equal(isInScope("2001:db8:abcd::1", ["2001:db8::/32"]), true);
+  assert.equal(isInScope("http://[2001:db8::cafe]:8080/path", ["2001:db8::/32"]), true);
+  assert.equal(isInScope("2001:db9::1", ["2001:db8::/32"]), false);
+  assert.equal(isInScope("::1", ["::1/128"]), true);
+  assert.equal(isInScope("::2", ["::1/128"]), false);
+  assert.equal(isInScope("fe80::1", ["::/0"]), true);
+});
+
+test("scope: validates CIDR ranges in targets", () => {
+  assert.throws(() => scopeEntries({ targets: ["10.10.0.0/99"] }), /prefix \/99 must be between 0 and 32/);
+  assert.throws(() => scopeEntries({ targets: ["192.168.1.500/24"] }), /malformed IPv4 address/);
+  assert.throws(() => scopeEntries({ targets: ["2001:db8::/200"] }), /prefix \/200 must be between 0 and 128/);
+  assert.throws(() => scopeEntries({ targets: ["2001:xyz::/64"] }), /malformed IPv6 address/);
 });
 
 test("cve cache: eager files, lazy CVE-named files, malformed skipped", () => {
@@ -98,6 +124,104 @@ test("findings: alias targets, generated ids avoid collisions, duplicates report
   assert.equal(dup.findings[2]!.id, "F-2"); // F-1 is taken by the input
 
   assert.throws(() => loadFindings(join(dir, "missing.json")), /not readable/);
+});
+
+test("findings: multiple findings files merge cleanly", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-multi-"));
+  const f1 = join(dir, "f1.json");
+  const f2 = join(dir, "f2.json");
+  writeFileSync(f1, JSON.stringify([{ id: "F-1", target: "https://a.example.com" }]));
+  writeFileSync(f2, JSON.stringify([{ id: "F-2", target: "https://b.example.com" }]));
+  const res = loadFindings([f1, f2]);
+  assert.equal(res.findings.length, 2);
+  assert.equal(res.findings[0]!.id, "F-1");
+  assert.equal(res.findings[1]!.id, "F-2");
+});
+
+test("findings: parses Nuclei JSONL and OWASP ZAP export format", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-formats-"));
+  const jsonlFile = join(dir, "nuclei.jsonl");
+  writeFileSync(
+    jsonlFile,
+    [
+      '{"template-id": "http-headers", "info": {"name": "Missing Headers", "severity": "low"}, "matched-at": "https://app.example.com"}',
+      '{"template-id": "git-config", "info": {"name": "Git Config", "severity": "high"}, "matched-at": "https://api.example.com/.git/config"}',
+    ].join("\n"),
+  );
+  const jsonlRes = loadFindings(jsonlFile);
+  assert.equal(jsonlRes.findings.length, 2);
+  assert.equal(jsonlRes.findings[0]!.id, "http-headers");
+  assert.equal(jsonlRes.findings[0]!.target, "https://app.example.com");
+
+  const zapFile = join(dir, "zap.json");
+  writeFileSync(
+    zapFile,
+    JSON.stringify({
+      site: [
+        {
+          "@name": "https://example.com",
+          alerts: [
+            {
+              pluginId: "10038",
+              alert: "CSP Header Not Set",
+              riskdesc: "Low (Medium)",
+              instances: [{ uri: "https://example.com/test" }],
+            },
+          ],
+        },
+      ],
+    }),
+  );
+  const zapRes = loadFindings(zapFile);
+  assert.equal(zapRes.findings.length, 1);
+  assert.equal(zapRes.findings[0]!.id, "10038");
+  assert.equal(zapRes.findings[0]!.target, "https://example.com/test");
+  assert.equal(zapRes.findings[0]!.severity, "low");
+});
+
+test("findings: deduplicateFindings combines duplicate scanner findings", () => {
+  const list: Finding[] = [
+    { id: "1", target: "https://example.com", title: "Missing CSP", tool: "nuclei", severity: "low" },
+    { id: "2", target: "https://example.com/", title: "Missing CSP", tool: "zap", severity: "medium" },
+    { id: "3", target: "https://example.com/api", title: "Auth bypass", tool: "custom", severity: "high" },
+  ];
+  const { unique, mergedCount } = deduplicateFindings(list);
+  assert.equal(unique.length, 2);
+  assert.equal(mergedCount, 1);
+  assert.equal(unique[0]!.severity, "medium", "highest severity retained");
+  assert.ok(unique[0]!.tool?.includes("nuclei") && unique[0]!.tool?.includes("zap"), "tools merged");
+});
+
+test("cve cache: fetchNvdCve parses NVD 2.0 API response and caches to disk", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-nvd-"));
+  const orig = globalThis.fetch;
+  t.after(() => (globalThis.fetch = orig));
+  globalThis.fetch = (async () => {
+    return new Response(
+      JSON.stringify({
+        vulnerabilities: [
+          {
+            cve: {
+              id: "CVE-2023-4863",
+              descriptions: [{ lang: "en", value: "Heap buffer overflow in libwebp" }],
+              metrics: { cvssMetricV31: [{ cvssData: { baseScore: 8.8, baseSeverity: "HIGH" } }] },
+              references: [{ url: "https://nvd.nist.gov" }],
+            },
+          },
+        ],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const entry = await fetchNvdCve("CVE-2023-4863", dir);
+  assert.ok(entry);
+  assert.equal(entry.id, "CVE-2023-4863");
+  assert.equal(entry.cvss, 8.8);
+  assert.equal(entry.severity, "HIGH");
+
+  const disk = loadCveCache(dir);
+  assert.equal(disk.get("CVE-2023-4863")?.cvss, 8.8);
 });
 
 test("verify: valid result passes, bad enums throw", () => {
@@ -163,11 +287,13 @@ test("report: triages each finding, then synthesizes; failures are noted", async
   });
   t.after(restore);
 
+  const logs: string[] = [];
   const out = await buildReport([makeFinding("F-A"), makeFinding("F-B")], {
     scope: { targets: ["example.com"] },
     cache: loadCveCache(cacheDir()),
-  });
+  }, (msg) => logs.push(msg));
   assert.equal(prompts.length, 3); // 2 triage + 1 synthesis
+  assert.ok(logs.some((l) => l.includes("triaged [")));
   assert.equal(out.failures.length, 1);
   assert.match(out.failures[0]!, /F-B/);
   assert.equal(out.markdown, "REPORT MD");
@@ -183,6 +309,18 @@ test("report: all triage failures throw instead of producing an empty report", a
     () => buildReport([makeFinding("F-A")], { scope: { targets: ["example.com"] }, cache: new Map() }),
     /no finding could be triaged/,
   );
+});
+
+test("report: markdownToHtml and renderReportHtml output styled HTML report", () => {
+  const md = "# Assessment Report\n\n**High** risk found on `api.example.com`.\n\n- Step 1\n- Step 2\n\n| ID | Severity |\n|---|---|\n| F-1 | High |\n";
+  const html = renderReportHtml(md, "Test Report");
+  assert.ok(html.includes("<!DOCTYPE html>"));
+  assert.ok(html.includes("<title>Test Report</title>"));
+  assert.ok(html.includes("<h1>Assessment Report</h1>"));
+  assert.ok(html.includes("<strong>High</strong>"));
+  assert.ok(html.includes("<code>api.example.com</code>"));
+  assert.ok(html.includes("<li>Step 1</li>"));
+  assert.ok(html.includes("<table>"));
 });
 
 test("triage: findingId is forced from the input finding, not the model reply", async (t) => {
@@ -250,6 +388,44 @@ test("chatStream: yields SSE deltas until [DONE]", async (t) => {
   assert.equal(chunks.join(""), "Hello");
 });
 
+test("chatStream: retries connection on 429 before streaming starts", async (t) => {
+  process.env.VAPT_LLM_MODEL = "stub";
+  const orig = globalThis.fetch;
+  t.after(() => (globalThis.fetch = orig));
+  let calls = 0;
+  const sse = [
+    'data: {"choices":[{"delta":{"content":"retry-ok"}}]}\n\n',
+    "data: [DONE]\n\n",
+  ];
+  globalThis.fetch = (async () => {
+    if (++calls === 1) return new Response("rate limited", { status: 429 });
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const frame of sse) controller.enqueue(new TextEncoder().encode(frame));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+  const chunks: string[] = [];
+  for await (const chunk of chatStream([{ role: "user", content: "hi" }])) chunks.push(chunk);
+  assert.equal(chunks.join(""), "retry-ok");
+  assert.equal(calls, 2);
+});
+
+test("llm: estimateTokens and estimateMessageTokens compute token bounds", () => {
+  assert.equal(estimateTokens(""), 0);
+  assert.equal(estimateTokens("abcd"), 1);
+  assert.equal(estimateTokens("12345678"), 2);
+  const msgs = [
+    { role: "user" as const, content: "hello world" },
+    { role: "assistant" as const, content: "hi" },
+  ];
+  assert.ok(estimateMessageTokens(msgs) > 0);
+});
+
 test("ui: box aligns borders and measures colored text", () => {
   const colored = "\x1b[31mred\x1b[0m";
   assert.equal(stripAnsi(colored), "red");
@@ -264,6 +440,57 @@ test("ui: box aligns borders and measures colored text", () => {
 
   const plain = box(["only"]);
   assert.equal(new Set(plain.split("\n").map((r) => r.length)).size, 1);
+});
+
+test("ui: progressBar formats ratio and counts", () => {
+  const p0 = stripAnsi(progressBar(0, 10, 10));
+  assert.equal(p0, "[░░░░░░░░░░] 0% (0/10)");
+  const p5 = stripAnsi(progressBar(5, 10, 10));
+  assert.equal(p5, "[█████░░░░░] 50% (5/10)");
+  const p10 = stripAnsi(progressBar(10, 10, 10));
+  assert.equal(p10, "[██████████] 100% (10/10)");
+});
+
+test("ui: renderMarkdownLine converts markdown elements to ANSI", () => {
+  const h1 = stripAnsi(renderMarkdownLine("# Heading One"));
+  assert.equal(h1, "Heading One");
+  const boldText = stripAnsi(renderMarkdownLine("this is **bold** text"));
+  assert.equal(boldText, "this is bold text");
+  const codeText = stripAnsi(renderMarkdownLine("use `vapt` cli"));
+  assert.equal(codeText, "use vapt cli");
+  const bullet = stripAnsi(renderMarkdownLine("- list item"));
+  assert.equal(bullet, "• list item");
+});
+
+test("ui: formatTriageResult builds formatted boxed result card", () => {
+  const tr: TriageResult = {
+    findingId: "F-1",
+    triage: {
+      isLikelyTruePositive: true,
+      reasoning: "Matched CVE-2020-11022",
+      adjustedSeverity: "medium",
+      owaspCategory: "A06:2021",
+    },
+    explanation: "Outdated library in vendor.js",
+    remediation: {
+      summary: "Upgrade jQuery to 3.5.0+",
+      steps: ["npm update jquery"],
+      references: ["https://nvd.nist.gov"],
+    },
+    confidence: "high",
+    flaggedForManualReview: true,
+  };
+  const card = formatTriageResult(tr);
+  assert.ok(card.includes("F-1"));
+  assert.ok(card.includes("likely true positive"));
+  assert.ok(card.includes("manual review"));
+});
+
+test("agent-prompt: dataTag wraps objects in tagged block", () => {
+  const tagged = dataTag("scope", { engagement: "Test" });
+  assert.ok(tagged.startsWith("<scope>\n"));
+  assert.ok(tagged.endsWith("\n</scope>"));
+  assert.ok(tagged.includes('"engagement": "Test"'));
 });
 
 test("config: save/load roundtrip with owner-only permissions", () => {
@@ -295,4 +522,206 @@ test("cli: subcommand flags reach the subcommand (program options must not swall
   assert.equal(r.status, 1);
   assert.match(r.stderr, /scope file not found/); // got past parsing into scope loading
   assert.doesNotMatch(r.stderr, /required option/);
+});
+
+test("diff: compareFindings calculates resolved, persistent, and new findings", () => {
+  const baseline: Finding[] = [
+    { id: "F-1", target: "https://example.com/api", title: "SQL Injection", severity: "high" },
+    { id: "F-2", target: "https://example.com/login", title: "Reflected XSS", severity: "medium" },
+    { id: "F-3", target: "https://example.com/admin", title: "Information Disclosure", severity: "low" },
+  ];
+
+  const current: Finding[] = [
+    // F-1 resolved (not in current)
+    // F-2 persistent with severity downgrade (medium -> low)
+    { id: "F-2", target: "https://example.com/login", title: "Reflected XSS", severity: "low" },
+    // F-3 persistent with same severity
+    { id: "F-3", target: "https://example.com/admin", title: "Information Disclosure", severity: "low" },
+    // F-4 newly introduced
+    { id: "F-4", target: "https://example.com/pay", title: "SSRF", severity: "critical" },
+  ];
+
+  const diff = compareFindings(baseline, current);
+
+  assert.equal(diff.baselineTotal, 3);
+  assert.equal(diff.currentTotal, 3);
+  assert.equal(diff.resolved.length, 1);
+  assert.equal(diff.resolved[0]?.title, "SQL Injection");
+  assert.equal(diff.persistent.length, 2);
+  const xss = diff.persistent.find((p) => p.current.title === "Reflected XSS");
+  assert.equal(xss?.severityDrift, "downgraded");
+  assert.equal(xss?.previousSeverity, "medium");
+  assert.equal(xss?.currentSeverity, "low");
+
+  assert.equal(diff.new.length, 1);
+  assert.equal(diff.new[0]?.title, "SSRF");
+  assert.equal(diff.remediationRate, 33.3);
+
+  const md = renderDiffMarkdown(diff, { engagement: "ACME Corp" });
+  assert.ok(md.includes("ACME Corp — Remediation Delta Report"));
+  assert.ok(md.includes("33.3%"));
+  assert.ok(md.includes("SQL Injection"));
+
+  const html = renderDiffHtml(diff, { engagement: "ACME Corp" });
+  assert.ok(html.includes("<!DOCTYPE html>"));
+  assert.ok(html.includes("ACME Corp"));
+});
+
+test("diff: cli command executes and emits structured json", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-diff-"));
+  const bPath = join(dir, "baseline.json");
+  const cPath = join(dir, "current.json");
+  writeFileSync(bPath, JSON.stringify([{ id: "F-1", target: "example.com", title: "Bug A", severity: "high" }]));
+  writeFileSync(cPath, JSON.stringify([{ id: "F-2", target: "example.com", title: "Bug B", severity: "low" }]));
+
+  const r = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "src/cli.ts", "diff", "-b", bPath, "-c", cPath, "--json"],
+    { cwd: process.cwd(), encoding: "utf8" },
+  );
+  assert.equal(r.status, 0);
+  const parsed = JSON.parse(r.stdout);
+  assert.equal(parsed.baselineTotal, 1);
+  assert.equal(parsed.currentTotal, 1);
+  assert.equal(parsed.resolved.length, 1);
+  assert.equal(parsed.new.length, 1);
+});
+
+test("llm: buildLlmRequest adapts payloads for Anthropic native messages", () => {
+  const origEnv = { ...process.env };
+  try {
+    process.env.VAPT_LLM_PROVIDER = "anthropic";
+    process.env.VAPT_LLM_MODEL = "claude-sonnet-4-6";
+    process.env.VAPT_LLM_API_KEY = "sk-ant-secret";
+
+    const messages = [
+      { role: "system" as const, content: "You are a senior security researcher." },
+      { role: "user" as const, content: "Analyze finding F-1." },
+    ];
+
+    const req = buildLlmRequest(messages, false);
+    assert.equal(req.isAnthropic, true);
+    assert.equal(req.url, "https://api.anthropic.com/v1/messages");
+    assert.equal(req.headers["x-api-key"], "sk-ant-secret");
+    assert.equal(req.headers["anthropic-version"], "2023-06-01");
+
+    const parsed = JSON.parse(req.body);
+    assert.equal(parsed.system, "You are a senior security researcher.");
+    assert.equal(parsed.model, "claude-sonnet-4-6");
+    assert.equal(parsed.messages.length, 1);
+    assert.equal(parsed.messages[0].role, "user");
+    assert.equal(parsed.messages[0].content, "Analyze finding F-1.");
+    assert.equal(parsed.max_tokens, 4096);
+  } finally {
+    process.env = origEnv;
+  }
+});
+
+test("llm: chat and chatStream parse native Anthropic response formats", async (t) => {
+  const origEnv = { ...process.env };
+  const origFetch = globalThis.fetch;
+  t.after(() => {
+    process.env = origEnv;
+    globalThis.fetch = origFetch;
+  });
+
+  process.env.VAPT_LLM_PROVIDER = "anthropic";
+  process.env.VAPT_LLM_MODEL = "claude-sonnet-4-6";
+  process.env.VAPT_LLM_API_KEY = "sk-ant-test";
+
+  // Test non-streaming chat
+  globalThis.fetch = (async () => {
+    return new Response(
+      JSON.stringify({
+        id: "msg_123",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "Remediation verified." }],
+      }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
+  }) as typeof fetch;
+
+  const reply = await chat([{ role: "user", content: "test" }]);
+  assert.equal(reply, "Remediation verified.");
+
+  // Test streaming chatStream
+  const sseFrames = [
+    'data: {"type":"message_start"}\n\n',
+    'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"Remediation "}}\n\n',
+    'data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"complete."}}\n\n',
+    'data: {"type":"message_stop"}\n\n',
+  ];
+
+  globalThis.fetch = (async () => {
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const frame of sseFrames) controller.enqueue(new TextEncoder().encode(frame));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
+
+  const chunks: string[] = [];
+  for await (const chunk of chatStream([{ role: "user", content: "test stream" }])) {
+    chunks.push(chunk);
+  }
+  assert.equal(chunks.join(""), "Remediation complete.");
+});
+
+test("workspace: createWorkspace, listWorkspaces, setActiveWorkspace, and resolveWorkspacePath", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-ws-test-"));
+  const origCfgDir = process.env.VAPT_CONFIG_DIR;
+  const origWsRoot = process.env.VAPT_WORKSPACES_ROOT;
+  process.env.VAPT_CONFIG_DIR = dir;
+  process.env.VAPT_WORKSPACES_ROOT = join(dir, "workspaces");
+
+  try {
+    // Seed initial config
+    saveConfig({
+      provider: "OpenAI",
+      baseUrl: "https://api.openai.com/v1",
+      model: "gpt-4o-mini",
+    });
+
+    assert.equal(getActiveWorkspace(), null);
+    assert.equal(listWorkspaces().length, 0);
+
+    const clientADir = createWorkspace("client-acme", {
+      engagement: "ACME Corp 2026 Penetration Test",
+      targets: ["acme.org", "api.acme.org"],
+    });
+
+    assert.ok(clientADir.includes("client-acme"));
+    // Since it was the first created workspace, it should automatically be activated
+    assert.equal(getActiveWorkspace(), "client-acme");
+
+    createWorkspace("client-globex", {
+      engagement: "Globex Red Team",
+      targets: ["globex.test"],
+    });
+
+    const list = listWorkspaces();
+    assert.equal(list.length, 2);
+    const acme = list.find((w) => w.name === "client-acme");
+    assert.equal(acme?.isActive, true);
+    assert.equal(acme?.targetCount, 2);
+    assert.equal(acme?.engagement, "ACME Corp 2026 Penetration Test");
+
+    setActiveWorkspace("client-globex");
+    assert.equal(getActiveWorkspace(), "client-globex");
+
+    // resolveWorkspacePath fallback test
+    const scopeResolved = resolveWorkspacePath("scope.json");
+    assert.ok(scopeResolved.includes("client-globex"));
+  } finally {
+    if (origCfgDir) process.env.VAPT_CONFIG_DIR = origCfgDir;
+    else delete process.env.VAPT_CONFIG_DIR;
+
+    if (origWsRoot) process.env.VAPT_WORKSPACES_ROOT = origWsRoot;
+    else delete process.env.VAPT_WORKSPACES_ROOT;
+  }
 });

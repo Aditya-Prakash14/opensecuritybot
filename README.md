@@ -6,7 +6,7 @@
 
 ![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-15%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-33%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -99,8 +99,7 @@ vapt init                      # writes scope.json, cve-cache/, report/
 { "engagement": "Acme Q4", "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"] }
 ```
 
-Matches exact hosts, subdomains, `*.wildcards` and IPv4 CIDR ranges. IPv6 hosts match
-individually; IPv6 *ranges* are warned about and skipped.
+Matches exact hosts, subdomains, `*.wildcards`, IPv4 CIDR and IPv6 CIDR ranges.
 
 **2. Drop scanner output at `findings.json`** — an array or `{ "findings": [...] }`, straight
 from Nuclei/ZAP/nmap. Targets are picked up from `target`, `host`, `url`, `endpoint`,
@@ -119,8 +118,10 @@ only when a finding references that CVE, so a full NVD-sized cache stays cheap.
 | `vapt` | interactive session (needs a TTY) — options `-f -s -c -o` for the workspace |
 | `vapt setup` | provider/API-key/model wizard → `~/.config/vapt/config.json` |
 | `vapt init [-d <dir>]` | scaffold a workspace: `scope.json`, `cve-cache/`, `report/` |
-| `vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json]` | triage findings |
-| `vapt report -f <findings> [-s <scope>] [-c <cache>] [-o <dir>]` | compile the full VAPT report |
+| `vapt workspace [list\|create\|use\|current]` | multi-engagement workspace management |
+| `vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json] [-q]` | triage findings |
+| `vapt report -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--html] [--json] [-q]` | compile full VAPT report (Markdown + HTML) |
+| `vapt diff -b <baseline> -c <current> [-s <scope>] [-o <file>] [--html] [--json] [-q]` | compare baseline vs re-test findings (remediation delta verification) |
 
 ## Interactive session
 
@@ -158,6 +159,8 @@ cards.
 | `/findings` | the in-scope queue, severity-descending, triaged/queued |
 | `/scope` | the confirmed engagement targets |
 | `/report` | compile the full VAPT report and save it |
+| `/save [path]` | persist current session state and triaged findings to disk |
+| `/load [path]` | restore a saved session state from disk |
 | `/help`, `/exit` | list commands / leave |
 
 **Anything else is a question** answered by the agent, streamed, grounded in the loaded
@@ -244,10 +247,12 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 | `src/report.ts` | report build (concurrent triage + synthesis) and saving |
 | `src/verify.ts` | schema validation, CVE cross-check |
 | `src/scope-guard.ts` | scope matching and pre-LLM filtering |
-| `src/findings.ts` | findings loading/normalization, id handling |
-| `src/cve-cache.ts` | lazy NVD cache index |
-| `src/llm.ts` | OpenAI-compatible client (chat + SSE stream) |
-| `src/ui.ts` | zero-dependency ANSI, spinner, boxes, markdown rendering |
+| `src/findings.ts` | findings loading/normalization, id handling, scanner parsers (ZAP/Nuclei), deduplication |
+| `src/diff.ts` | remediation delta comparison and reporting (Markdown + HTML) |
+| `src/workspace.ts` | multi-engagement workspace management and path resolution |
+| `src/cve-cache.ts` | lazy NVD cache index, on-demand NVD 2.0 API fetching |
+| `src/llm.ts` | LLM client (OpenAI chat/SSE + Anthropic native messages, retry, backoff) |
+| `src/ui.ts` | zero-dependency ANSI, spinner, boxes, progress bars, markdown rendering |
 | `src/agent-prompt.ts` | system prompt + prompt-building helpers |
 
 </details>
@@ -255,8 +260,9 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 ## Tests
 
 ```sh
-npm test        # 15 tests: scope, cache, verify, report pipeline, retry/timeout,
-                # streaming, config, CLI parsing regression
+npm test        # 33 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-fetch, verify,
+                # multi-findings, JSONL/ZAP parsing, deduplication, HTML report, retry/timeout,
+                # rate backoff, token estimation, streaming, config, diff, Anthropic messages, workspace
 ```
 
 ## Design notes and limitations
@@ -266,6 +272,6 @@ npm test        # 15 tests: scope, cache, verify, report pipeline, retry/timeout
   "not triaged — processing error" and the run exits non-zero.
 - Triage calls include full evidence; the synthesis pass receives findings with `raw`
   stripped. The report is printed before it is saved — a save failure never discards output.
-- Streaming has no retry once tokens have started; re-ask if the connection drops mid-answer.
-- IPv6 CIDR ranges in `scope.json` are not matchable yet (a warning is printed instead of a
-  silent skip); list IPv6 hosts individually.
+- Streaming retries the connection once on network errors or 429/5xx (matching the
+  non-streaming path). Once tokens have started flowing there is no retry — re-ask if the
+  connection drops mid-answer.

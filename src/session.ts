@@ -1,3 +1,5 @@
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
 import { loadCveCache } from "./cve-cache.js";
@@ -63,6 +65,10 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   process.stderr.write(`  ${dim("authorized engagements only · /help for commands · /exit to quit")}\n\n`);
 
   const rl = createInterface({ input: process.stdin, output: process.stderr });
+  const onSigint = () => {
+    process.stderr.write("\n" + dim("(Use /exit to quit)") + "\n");
+  };
+  rl.on("SIGINT", onSigint);
   try {
     while (true) {
       let line: string;
@@ -81,6 +87,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       }
     }
   } finally {
+    rl.removeListener("SIGINT", onSigint);
     rl.close();
   }
   process.stderr.write(dim("bye") + "\n");
@@ -98,6 +105,8 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
               `${bold(padCmd("/findings"))}the in-scope queue, severity-descending`,
               `${bold(padCmd("/scope"))}the confirmed engagement targets`,
               `${bold(padCmd("/report"))}compile the full VAPT report and save it`,
+              `${bold(padCmd("/save [path]"))}persist triaged results & history to disk`,
+              `${bold(padCmd("/load [path]"))}restore session state from disk`,
               `${bold(padCmd("/help"))}this help · ${bold("/exit")} leaves`,
               "",
               "Anything else is a question for the agent about the loaded engagement.",
@@ -107,6 +116,44 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
           "\n\n",
       );
       return;
+
+    case "save": {
+      const targetPath = rest[0] || join(opts.out, "session-state.json");
+      try {
+        mkdirSync(opts.out, { recursive: true });
+        const payload = {
+          savedAt: new Date().toISOString(),
+          results: [...state.results.entries()],
+          history: state.history,
+        };
+        writeFileSync(targetPath, JSON.stringify(payload, null, 2) + "\n");
+        process.stdout.write(green(`saved session state (${state.results.size} result(s)) to ${targetPath}`) + "\n");
+      } catch (e) {
+        process.stderr.write(red(`failed to save session: ${(e as Error).message}`) + "\n");
+      }
+      return;
+    }
+
+    case "load": {
+      const targetPath = rest[0] || join(opts.out, "session-state.json");
+      try {
+        const raw = JSON.parse(readFileSync(targetPath, "utf8"));
+        let count = 0;
+        if (Array.isArray(raw?.results)) {
+          for (const [k, v] of raw.results) {
+            state.results.set(k, v);
+            count++;
+          }
+        }
+        if (Array.isArray(raw?.history)) {
+          state.history = raw.history;
+        }
+        process.stdout.write(green(`loaded session state (${count} result(s)) from ${targetPath}`) + "\n");
+      } catch (e) {
+        process.stderr.write(red(`failed to load session: ${(e as Error).message}`) + "\n");
+      }
+      return;
+    }
 
     case "scope": {
       if (!state.scope) {

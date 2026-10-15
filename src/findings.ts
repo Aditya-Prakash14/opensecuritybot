@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import type { Finding } from "./types.js";
 
-const TARGET_KEYS = ["target", "host", "url", "endpoint", "matched_at", "matchedAt", "asset"];
-const ID_KEYS = ["id", "findingId", "template_id", "_id", "alertRef"];
+const TARGET_KEYS = ["target", "host", "url", "endpoint", "matched_at", "matchedAt", "matched-at", "asset"];
+const ID_KEYS = ["id", "findingId", "template_id", "template-id", "_id", "alertRef", "pluginId"];
 const MAX_RAW = 8000;
 
 export interface LoadedFindings {
@@ -13,6 +13,56 @@ export interface LoadedFindings {
 
 function pickString(raw: Record<string, unknown>, keys: string[]): string | undefined {
   return keys.map((k) => raw[k]).find((v): v is string => typeof v === "string" && v.trim().length > 0);
+}
+
+function parseZapRisk(risk: unknown): string {
+  if (typeof risk !== "string") return "info";
+  const main = risk.split("(")[0]!.trim().toLowerCase();
+  if (main.includes("high")) return "high";
+  if (main.includes("medium")) return "medium";
+  if (main.includes("low")) return "low";
+  if (main.includes("informational") || main.includes("info")) return "info";
+  return "low";
+}
+
+function parseRawFindingsData(content: string, path: string): unknown[] {
+  try {
+    const data = JSON.parse(content);
+    if (Array.isArray(data)) return data;
+    if (Array.isArray((data as any)?.findings)) return (data as any).findings;
+    // Auto-detect OWASP ZAP JSON export
+    if (Array.isArray((data as any)?.site)) {
+      const zapAlerts: unknown[] = [];
+      for (const s of (data as any).site) {
+        if (Array.isArray(s?.alerts)) {
+          for (const a of s.alerts) {
+            const target = a?.instances?.[0]?.uri ?? s?.["@name"] ?? s?.name;
+            zapAlerts.push({ ...a, target, title: a?.alert ?? a?.name, severity: parseZapRisk(a?.riskdesc ?? a?.risk) });
+          }
+        }
+      }
+      if (zapAlerts.length > 0) return zapAlerts;
+    }
+    throw new Error("expected a non-empty array or { \"findings\": [...] }");
+  } catch (err) {
+    // Attempt line-delimited JSON (Nuclei JSONL output)
+    const lines = content.split("\n").map((l) => l.trim()).filter(Boolean);
+    if (lines.length > 0 && lines.every((l) => l.startsWith("{") && l.endsWith("}"))) {
+      try {
+        return lines.map((l) => {
+          const parsed = JSON.parse(l);
+          if (parsed?.info && !parsed.title) {
+            parsed.title = parsed.info.name ?? parsed.info.title;
+            parsed.severity = parsed.severity ?? parsed.info.severity;
+          }
+          return parsed;
+        });
+      } catch {
+        /* fall through to error */
+      }
+    }
+    throw new Error(`${path}: not readable as JSON or JSONL (${(err as Error).message})`);
+  }
 }
 
 function normalizeFinding(raw: unknown): { finding: Finding; autoId: boolean } | null {
@@ -29,44 +79,89 @@ function normalizeFinding(raw: unknown): { finding: Finding; autoId: boolean } |
 }
 
 /**
- * Load and normalize a findings file (array or { "findings": [...] }).
- * Auto-generated ids skip past any id the input already uses; duplicate input ids are reported.
+ * Deduplicate findings across multiple scanners based on target + (cve || title || id).
+ * Merges tool names and retains the highest severity.
  */
-export function loadFindings(path: string): LoadedFindings {
-  let data: unknown;
-  try {
-    data = JSON.parse(readFileSync(path, "utf8"));
-  } catch (e) {
-    throw new Error(`${path}: not readable as JSON (${(e as Error).message})`);
+export function deduplicateFindings(findings: Finding[]): { unique: Finding[]; mergedCount: number } {
+  const map = new Map<string, Finding>();
+  let mergedCount = 0;
+
+  for (const f of findings) {
+    const normTarget = f.target.toLowerCase().replace(/\/+$/, "");
+    const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
+    const titleKey = String(f.title || f.template_id || f.id).toLowerCase().trim();
+    const sig = `${normTarget}::${cveKey ?? titleKey}`;
+
+    if (map.has(sig)) {
+      const existing = map.get(sig)!;
+      mergedCount++;
+      if (f.tool && existing.tool && !existing.tool.includes(f.tool)) {
+        existing.tool = `${existing.tool}, ${f.tool}`;
+      }
+      if (severityRank(f.severity) > severityRank(existing.severity)) {
+        existing.severity = f.severity;
+      }
+    } else {
+      map.set(sig, { ...f });
+    }
   }
-  const arr = Array.isArray(data) ? data : (data as { findings?: unknown })?.findings;
-  if (!Array.isArray(arr) || arr.length === 0) throw new Error(`${path}: expected a non-empty array or { "findings": [...] }`);
 
-  const entries = arr.map((raw, i) => ({ i, normalized: normalizeFinding(raw) }));
+  return { unique: [...map.values()], mergedCount };
+}
 
+function severityRank(s?: string): number {
+  switch ((s ?? "").toLowerCase()) {
+    case "critical": return 4;
+    case "high": return 3;
+    case "medium": return 2;
+    case "low": return 1;
+    default: return 0;
+  }
+}
+
+/**
+ * Load and normalize one or more findings files (array, { "findings": [...] }, ZAP JSON, or Nuclei JSONL).
+ * Auto-generated ids skip past any id the input already uses; duplicate input ids are reported across files.
+ */
+export function loadFindings(pathOrPaths: string | string[]): LoadedFindings {
+  const paths = Array.isArray(pathOrPaths) ? pathOrPaths : [pathOrPaths];
+  const allFindings: Finding[] = [];
+  const allSkipped: string[] = [];
+  const allDuplicates = new Set<string>();
   const used = new Set<string>();
-  const duplicates = new Set<string>();
-  for (const { normalized } of entries) {
-    if (!normalized || normalized.autoId) continue;
-    if (used.has(normalized.finding.id)) duplicates.add(normalized.finding.id);
-    used.add(normalized.finding.id);
+  let nextAuto = 1;
+
+  for (const path of paths) {
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8").trim();
+    } catch (e) {
+      throw new Error(`${path}: not readable (${(e as Error).message})`);
+    }
+    const arr = parseRawFindingsData(content, path);
+    if (!Array.isArray(arr) || arr.length === 0) throw new Error(`${path}: expected a non-empty array or { "findings": [...] }`);
+
+    const entries = arr.map((raw, i) => ({ i, normalized: normalizeFinding(raw) }));
+    for (const { normalized } of entries) {
+      if (!normalized || normalized.autoId) continue;
+      if (used.has(normalized.finding.id)) allDuplicates.add(normalized.finding.id);
+      used.add(normalized.finding.id);
+    }
+
+    for (const { i, normalized } of entries) {
+      if (!normalized) {
+        allSkipped.push(`${paths.length > 1 ? `${path} ` : ""}entry #${i + 1}: no target/host/url field`);
+        continue;
+      }
+      const { finding, autoId } = normalized;
+      if (autoId) {
+        while (used.has(`F-${nextAuto}`)) nextAuto++;
+        finding.id = `F-${nextAuto}`;
+        used.add(finding.id);
+      }
+      allFindings.push(finding);
+    }
   }
 
-  const findings: Finding[] = [];
-  const skipped: string[] = [];
-  let nextAuto = 1;
-  for (const { i, normalized } of entries) {
-    if (!normalized) {
-      skipped.push(`entry #${i + 1}: no target/host/url field`);
-      continue;
-    }
-    const { finding, autoId } = normalized;
-    if (autoId) {
-      while (used.has(`F-${nextAuto}`)) nextAuto++;
-      finding.id = `F-${nextAuto}`;
-      used.add(finding.id);
-    }
-    findings.push(finding);
-  }
-  return { findings, skipped, duplicates: [...duplicates] };
+  return { findings: allFindings, skipped: allSkipped, duplicates: [...allDuplicates] };
 }
