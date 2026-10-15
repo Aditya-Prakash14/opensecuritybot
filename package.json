@@ -1,6 +1,6 @@
 {
   "name": "opensecuritybot",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "VAPT-Agent — local CLI that triages, explains and reports scanner findings for authorized engagements",
   "type": "module",

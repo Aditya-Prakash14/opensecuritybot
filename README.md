@@ -21,11 +21,23 @@ Boundaries are enforced in two places:
 
 ```sh
 npm install
+npm run dev -- setup        # or after `npm run build && npm link`: vapt setup
+```
 
-export VAPT_LLM_BASE_URL=https://api.openai.com/v1   # default; use http://localhost:11434/v1 for Ollama
-export VAPT_LLM_MODEL=gpt-4o-mini                    # any model your endpoint serves
-export VAPT_LLM_API_KEY=sk-...                       # omit for local models
-export VAPT_LLM_TIMEOUT_MS=120000                    # optional per-request cap (streams default to 300000)
+`setup` walks you through **provider → API key → model** and saves it owner-only (0600) to
+`~/.config/vapt/config.json`. Supported providers: **OpenRouter, Groq, OpenAI, Meta Model
+API, Anthropic**, or any custom OpenAI-compatible URL (Ollama, LM Studio, vLLM…). The model
+list is fetched live from the provider; fall back to typing an id if the fetch fails.
+Running `vapt` (or `triage`/`report`) with no config on a TTY starts the wizard automatically.
+
+Environment variables override the saved config any time:
+
+```sh
+export VAPT_LLM_MODEL=gpt-4o-mini            # optional overrides:
+export VAPT_LLM_BASE_URL=https://api.openai.com/v1
+export VAPT_LLM_API_KEY=sk-...
+export VAPT_LLM_TIMEOUT_MS=120000            # per-request cap (streams default to 300000)
+export VAPT_LLM_TEMPERATURE=0.2              # only sent when set — newer Claude models reject it
 ```
 
 ## Usage

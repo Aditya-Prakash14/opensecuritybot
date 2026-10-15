@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { findCveIds, loadCveCache } from "../src/cve-cache.js";
+import { loadConfig, saveConfig } from "../src/config.js";
 import { loadFindings } from "../src/findings.js";
 import { chat, chatStream, parseJsonLoose } from "../src/llm.js";
 import { buildReport } from "../src/report.js";
@@ -262,4 +264,35 @@ test("ui: box aligns borders and measures colored text", () => {
 
   const plain = box(["only"]);
   assert.equal(new Set(plain.split("\n").map((r) => r.length)).size, 1);
+});
+
+test("config: save/load roundtrip with owner-only permissions", () => {
+  const dir = mkdtempSync(join(tmpdir(), "vapt-config-"));
+  process.env.VAPT_CONFIG_DIR = dir;
+  try {
+    assert.equal(loadConfig(), null);
+    const path = saveConfig({
+      provider: "OpenRouter",
+      baseUrl: "https://openrouter.ai/api/v1",
+      model: "anthropic/claude-sonnet-4.5",
+      apiKey: "sk-test",
+    });
+    assert.equal(path, join(dir, "config.json"));
+    assert.equal(loadConfig()?.model, "anthropic/claude-sonnet-4.5");
+    assert.equal(loadConfig()?.apiKey, "sk-test");
+    assert.equal(statSync(path).mode & 0o777, 0o600);
+  } finally {
+    delete process.env.VAPT_CONFIG_DIR;
+  }
+});
+
+test("cli: subcommand flags reach the subcommand (program options must not swallow them)", () => {
+  const r = spawnSync(
+    process.execPath,
+    ["--import", "tsx", "src/cli.ts", "triage", "-f", "examples/findings.json", "-s", "does-not-exist.json"],
+    { cwd: process.cwd(), encoding: "utf8", env: { ...process.env, VAPT_LLM_MODEL: "stub" } },
+  );
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /scope file not found/); // got past parsing into scope loading
+  assert.doesNotMatch(r.stderr, /required option/);
 });

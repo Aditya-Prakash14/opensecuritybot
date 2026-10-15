@@ -7,6 +7,7 @@ import { loadFindings } from "./findings.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, ipv6RangeEntries, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
+import { ensureConfigured, runSetup } from "./setup.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
 import { bold, dim, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
@@ -36,7 +37,8 @@ function prepare(findingPath: string, scopePath: string, cacheDir: string): Prep
 const program = new Command();
 program
   .name("vapt")
-  .version("0.3.0")
+  .version("0.4.0")
+  .enablePositionalOptions() // subcommand flags (triage -f …) must not be swallowed by the program-level options
   .description("VAPT-Agent — triage, explain and report scanner findings (authorized engagements only)")
   .option("-f, --findings <path>", "findings JSON for the interactive session", "./findings.json")
   .option("-s, --scope <path>", "confirmed scope file", "./scope.json")
@@ -44,6 +46,14 @@ program
   .option("-o, --out <dir>", "report output directory", "./report")
   .action(async (opts: { findings: string; scope: string; cache: string; out: string }) => {
     await startSession(opts);
+  });
+
+program
+  .command("setup")
+  .description("first-run setup: pick a provider, API key and model (saved to ~/.config/vapt/config.json)")
+  .action(async () => {
+    await runSetup();
+    console.error(dim("run `vapt` to start the interactive session"));
   });
 
 program
@@ -79,6 +89,7 @@ program
   .option("--id <findingId>", "triage only one finding by id")
   .option("--json", "emit structured JSON instead of markdown")
   .action(async (opts: { findings: string; scope: string; cache: string; id?: string; json?: boolean }) => {
+    await ensureConfigured();
     const { scope, findings, cache } = prepare(opts.findings, opts.scope, opts.cache);
     const queue = opts.id ? findings.filter((f) => f.id === opts.id) : findings;
     if (queue.length === 0) throw new Error(`finding ${opts.id} not found among in-scope findings`);
@@ -128,6 +139,7 @@ program
   .option("-c, --cache <dir>", "NVD cve-cache directory", "./cve-cache")
   .option("-o, --out <dir>", "report output directory", "./report")
   .action(async (opts: { findings: string; scope: string; cache: string; out: string }) => {
+    await ensureConfigured();
     const { scope, findings, cache } = prepare(opts.findings, opts.scope, opts.cache);
     mkdirSync(opts.out, { recursive: true }); // fail fast: a bad --out path must not cost N+1 LLM calls
     console.error(dim(`plan: report over ${findings.length} in-scope finding(s) — per-finding triage, then synthesis`));

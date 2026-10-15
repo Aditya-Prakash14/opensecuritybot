@@ -5,6 +5,7 @@ import { loadFindings } from "./findings.js";
 import { type ChatMessage, chatStream } from "./llm.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
+import { ensureConfigured } from "./setup.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson } from "./triage.js";
 import { bold, box, cyan, dim, formatTriageResult, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
@@ -31,6 +32,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   if (!process.stdin.isTTY) {
     throw new Error("interactive mode needs a TTY — for scripts use `vapt triage -f <findings> -s <scope.json>`");
   }
+  await ensureConfigured(); // first-run wizard when nothing is configured yet
 
   const state: SessionState = { findings: [], cache: loadCveCache(opts.cache), results: new Map(), history: [] };
 
