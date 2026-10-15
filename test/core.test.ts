@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { findCveIds, loadCveCache } from "../src/cve-cache.js";
 import { loadFindings } from "../src/findings.js";
-import { chat, parseJsonLoose } from "../src/llm.js";
+import { chat, chatStream, parseJsonLoose } from "../src/llm.js";
 import { buildReport } from "../src/report.js";
 import { ipv6RangeEntries, isInScope, scopeEntries } from "../src/scope-guard.js";
 import { triageFindingJson } from "../src/triage.js";
@@ -221,4 +221,28 @@ test("chat: aborts stalled requests via VAPT_LLM_TIMEOUT_MS", async (t) => {
       init.signal.addEventListener("abort", () => reject(init.signal.reason));
     })) as typeof fetch;
   await assert.rejects(() => chat([{ role: "user", content: "hi" }]), /timeout/i);
+});
+
+test("chatStream: yields SSE deltas until [DONE]", async (t) => {
+  process.env.VAPT_LLM_MODEL = "stub";
+  const orig = globalThis.fetch;
+  t.after(() => (globalThis.fetch = orig));
+  const sse = [
+    'data: {"choices":[{"delta":{"content":"Hel"}}]}\n\n',
+    'data: {"choices":[{"delta":{"content":"lo"}}]}\n\n',
+    "data: [DONE]\n\n",
+  ];
+  globalThis.fetch = (async () =>
+    new Response(
+      new ReadableStream({
+        start(controller) {
+          for (const frame of sse) controller.enqueue(new TextEncoder().encode(frame));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    )) as typeof fetch;
+  const chunks: string[] = [];
+  for await (const chunk of chatStream([{ role: "user", content: "hi" }])) chunks.push(chunk);
+  assert.equal(chunks.join(""), "Hello");
 });

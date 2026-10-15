@@ -25,16 +25,23 @@ npm install
 export VAPT_LLM_BASE_URL=https://api.openai.com/v1   # default; use http://localhost:11434/v1 for Ollama
 export VAPT_LLM_MODEL=gpt-4o-mini                    # any model your endpoint serves
 export VAPT_LLM_API_KEY=sk-...                       # omit for local models
-export VAPT_LLM_TIMEOUT_MS=120000                    # optional per-request timeout (default 120000)
+export VAPT_LLM_TIMEOUT_MS=120000                    # optional per-request cap (streams default to 300000)
 ```
 
 ## Usage
 
-Examples use the bundled demo (`-s examples/scope.json -c examples/cve-cache`); swap in your
-own engagement's files when running for real.
+New engagement:
 
 ```sh
-# development (no build step)
+npm run dev -- init                 # writes scope.json, cve-cache/, report/
+# edit scope.json, drop scanner output at findings.json
+npm run dev                         # interactive session
+```
+
+Commands and examples use the bundled demo (`-s examples/scope.json -c examples/cve-cache`):
+
+```sh
+# one-shot triage, streamed as markdown
 npm run dev -- triage -f examples/findings.json -s examples/scope.json -c examples/cve-cache
 
 # --json for the programmatic OUTPUT SCHEMA (one object per finding on stdout)
@@ -47,19 +54,34 @@ npm run dev -- triage -f examples/findings.json -s examples/scope.json -c exampl
 npm run dev -- report -f examples/findings.json -s examples/scope.json -c examples/cve-cache -o report/
 
 # production
-npm run build && node dist/cli.js triage --help
+npm run build && npm link           # gives you a global `vapt`
 ```
 
-Logs (plan, skipped findings, failures) go to **stderr**; data (markdown or JSON) goes to
-**stdout**, so `--json` output is always pipe-safe. Exit code is 1 if any finding failed
-to triage — partial results are still emitted.
+Logs (plan, skips, warnings, spinners) go to **stderr**; data (markdown, JSON, listings) goes
+to **stdout**, so `--json` output is always pipe-safe. Exit code is 1 if any finding failed —
+partial results are still emitted.
+
+## Interactive mode
+
+`vapt` with no command starts a session (needs a TTY):
+
+```
+vapt> /triage F-3        triage one finding, or all with /triage
+vapt> /findings          the in-scope queue, severity-descending
+vapt> /report            compile the full VAPT report and save it
+vapt> why is F-2 exploitable in our context?
+```
+
+Free-form questions stream answers from the agent, grounded in the loaded scope, findings
+and any triage results so far. Slash commands: `/triage [id]`, `/findings`, `/scope`,
+`/report`, `/help`, `/exit`.
 
 ## Workspace layout
 
 | Path          | Role                                                                |
 | ------------- | ------------------------------------------------------------------- |
 | `scope.json`  | confirmed engagement scope — **required**, the run refuses without it |
-| `findings`    | scanner output: array or `{ "findings": [...] }`; needs `id`/`target` or common aliases (`host`, `url`, `matched_at`, …) |
+| `findings.json` | scanner output: array or `{ "findings": [...] }`; needs `target` or common aliases (`host`, `url`, `matched_at`, …) |
 | `cve-cache/`  | optional NVD CVE JSON files (NVD 2.0 shape or flat `{id, description, cvss}`) |
 | `report/`     | generated reports (gitignored)                                      |
 
@@ -71,11 +93,10 @@ matched yet — a warning is printed; list IPv6 hosts individually.
 
 ## The verify step
 
-Beyond smoke tests, `src/verify.ts` does two deterministic checks on every programmatic
-reply: the schema is validated structurally, and every CVE ID the model cites is
-cross-checked against `cve-cache/`. Anything not in the cache is marked
-`flaggedForManualReview: true` with an `unverified — confirm manually` note. Keep your
-cache fresh for best results.
+`src/verify.ts` does two deterministic checks on every programmatic reply: the schema is
+validated structurally, and every CVE ID the model cites is cross-checked against
+`cve-cache/`. Anything not in the cache is marked `flaggedForManualReview: true` with an
+`unverified — confirm manually` note. Keep your cache fresh for best results.
 
 ## Tests
 
@@ -91,3 +112,5 @@ npm test
 - Triage calls include the full finding, evidence included; the synthesis pass receives
   findings with `raw` stripped. For sensitive engagements, point `VAPT_LLM_BASE_URL` at a
   local model.
+- No TUI dependency: the session, spinner and markdown rendering are readline plus a small
+  ANSI helper (`src/ui.ts`). Everything chrome-related writes to stderr, data to stdout.
