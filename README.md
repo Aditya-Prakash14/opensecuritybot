@@ -297,6 +297,8 @@ compared with the cached base score. Anything unverifiable sets
 
 ## Documentation site
 
+Live at **[opensecuritybot.vercel.app](https://opensecuritybot.vercel.app)**.
+
 The website lives in `apps/docs/` — a zero-dependency static build of these docs with a
 dark terminal theme, served with no framework and no runtime dependencies.
 
