@@ -48,6 +48,12 @@ Then create a GitHub Release for the tag. That triggers
 `.github/workflows/publish.yml`, which re-runs build + tests and publishes with
 provenance.
 
+Note: a `release` event runs the workflow file **from the tagged commit**, not from
+`main`. Tag only after the publish workflow you want is already on that commit —
+otherwise the release uses an older workflow (this bit v0.5.0: its tag predates
+trusted publishing, so the release run failed with `ENEEDAUTH`; the package itself
+was published manually and was unaffected).
+
 One-time setup: on npmjs.com, `opensecuritybot` → Settings → Trusted Publisher →
 GitHub Actions, owner `Aditya-Prakash14`, repository `opensecuritybot`, workflow
 `publish.yml`. After that the workflow needs **no token** — npm verifies it via OIDC.
