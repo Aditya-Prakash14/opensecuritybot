@@ -36,7 +36,8 @@ jobs:
       - name: Build docs
         env:
           SITE_BASE: "/${{ github.event.repository.name }}"
-          SITE_ORIGIN: "https://${{ github.repository_owner }}.github.io"
+          # Set the SITE_ORIGIN repository variable when the account uses a custom domain.
+          SITE_ORIGIN: ${{ vars.SITE_ORIGIN || format('https://{0}.github.io', github.repository_owner) }}
         run: node apps/docs/build.mjs
 
       - uses: actions/configure-pages@v5
