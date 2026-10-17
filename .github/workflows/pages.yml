@@ -1,0 +1,56 @@
+name: Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/docs/**"
+      - "README.md"
+      - "CHANGELOG.md"
+      - "SECURITY.md"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Project pages live under /<repo>/, so build with the base path and an absolute
+      # origin for social previews.
+      - name: Build docs
+        env:
+          SITE_BASE: "/${{ github.event.repository.name }}"
+          SITE_ORIGIN: "https://${{ github.repository_owner }}.github.io"
+        run: node apps/docs/build.mjs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: apps/docs/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

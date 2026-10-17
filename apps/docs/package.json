@@ -1,0 +1,11 @@
+{
+  "name": "@opensecuritybot/docs",
+  "private": true,
+  "type": "module",
+  "description": "Zero-dependency static docs site for opensecuritybot: markdown build plus a local preview server.",
+  "scripts": {
+    "build": "node build.mjs",
+    "dev": "node serve.mjs",
+    "preview": "node serve.mjs"
+  }
+}

@@ -295,6 +295,21 @@ When the reply names exactly one cached CVE and one explicit CVSS score, the sco
 compared with the cached base score. Anything unverifiable sets
 `flaggedForManualReview: true` with a note. Keep your cache fresh for best results.
 
+## Documentation site
+
+The website lives in `apps/docs/` — a zero-dependency static build of these docs with a
+dark terminal theme, served with no framework and no runtime dependencies.
+
+```sh
+npm run docs:dev      # build + serve http://localhost:4321
+npm run docs:build    # static output in apps/docs/dist/
+```
+
+Sources: `apps/docs/content/*.md` for guides, `src/theme.css` + `src/layout.mjs` for the
+chrome, and `build.mjs` for the Markdown renderer. `SECURITY.md` and `CHANGELOG.md` are
+rendered from the repo root so they cannot drift. GitHub Pages deploys on every push to
+`main` that touches the site (`.github/workflows/pages.yml`).
+
 ## Architecture
 
 <details>
