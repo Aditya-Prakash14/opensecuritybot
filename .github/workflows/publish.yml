@@ -40,4 +40,15 @@ jobs:
       # No token: npm verifies this workflow via OIDC (id-token: write above).
       # One-time setup on npmjs.com: opensecuritybot → Settings → Trusted Publisher
       # → GitHub Actions: Aditya-Prakash14/opensecuritybot, workflow "publish.yml".
-      - run: npm publish --provenance --access public
+
+      - name: Skip versions that are already on npm
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if npm view "opensecuritybot@$VERSION" version >/dev/null 2>&1; then
+            echo "opensecuritybot@$VERSION already exists — nothing to publish"
+            echo "SKIP_PUBLISH=1" >> "$GITHUB_ENV"
+          fi
+
+      - name: Publish
+        if: env.SKIP_PUBLISH != '1'
+        run: npm publish --provenance --access public
