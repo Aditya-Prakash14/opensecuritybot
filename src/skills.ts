@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 export const TOOL_ALLOWLIST = ["nmap", "nuclei", "httpx"] as const;
 export const PARSER_NAMES = ["httpx-jsonl", "nuclei-jsonl", "nmap-grepable"] as const;
@@ -23,9 +24,13 @@ export interface Skill {
 
 const PLACEHOLDER = /\{\{[^}]+\}\}/g;
 
-/** Skill definitions live in the repo's skills/ dir unless VAPT_SKILLS_DIR overrides it. */
+// Built-in skills ship at the package root (dist/skills.js -> ../skills), so a global
+// install resolves them from any working directory.
+const BUILTIN_SKILLS_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "skills");
+
+/** VAPT_SKILLS_DIR overrides the skills directory; otherwise the bundled skills/ is used. */
 export function skillsDir(): string {
-  return process.env.VAPT_SKILLS_DIR ?? "skills";
+  return process.env.VAPT_SKILLS_DIR ?? BUILTIN_SKILLS_DIR;
 }
 
 export function loadSkills(dir: string = skillsDir()): Skill[] {

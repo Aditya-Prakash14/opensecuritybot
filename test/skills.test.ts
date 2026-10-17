@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import test from "node:test";
 import { loadFindings } from "../src/findings.js";
 import { NORMALIZERS, normalizeOutput } from "../src/normalizers.js";
@@ -62,6 +62,12 @@ test("skills: valid temp skill loads, non-json files ignored, VAPT_SKILLS_DIR wi
     if (previous === undefined) delete process.env.VAPT_SKILLS_DIR;
     else process.env.VAPT_SKILLS_DIR = previous;
   }
+});
+
+test("skills: default dir is package-relative, not cwd-relative", () => {
+  // Regression: a global install must find the bundled skills from any working directory.
+  assert.ok(isAbsolute(skillsDir()), `expected an absolute skills dir, got ${skillsDir()}`);
+  assert.ok(existsSync(join(skillsDir(), "http-baseline.json")));
 });
 
 test("skills: invalid skill files throw with file name and reason", () => {

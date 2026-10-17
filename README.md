@@ -4,9 +4,10 @@
 
 **VAPT-Agent — the reasoning layer between your scanner and your report.**
 
-![version](https://img.shields.io/badge/version-0.5.0-blue)
+![version](https://img.shields.io/badge/version-0.5.2-blue)
+[![npm](https://img.shields.io/npm/v/opensecuritybot.svg)](https://www.npmjs.com/package/opensecuritybot)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-73%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-74%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -326,7 +327,7 @@ compared with the cached base score. Anything unverifiable sets
 ## Tests
 
 ```sh
-npm test        # 73 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
+npm test        # 74 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
                 # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
                 # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
                 # Anthropic messages, workspace, scan skills, normalizers, runner, ledger
