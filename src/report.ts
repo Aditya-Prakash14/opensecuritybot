@@ -19,10 +19,11 @@ export async function buildReport(
   findings: Finding[],
   ctx: TriageCtx,
   log?: (msg: string) => void,
+  methodology?: string,
 ): Promise<ReportOutcome> {
   const { results, failures } = await triageAll(findings, ctx, log);
   if (results.length === 0) throw new Error("no finding could be triaged — no report produced");
-  const markdown = await synthesize(findings, results, failures, ctx, log);
+  const markdown = await synthesize(findings, results, failures, ctx, log, methodology);
   return { markdown, failures };
 }
 
@@ -76,6 +77,7 @@ async function synthesize(
   failures: string[],
   ctx: TriageCtx,
   log?: (msg: string) => void,
+  methodology?: string,
 ): Promise<string> {
   log?.(`synthesizing report from ${results.length} triage result(s)`);
   const compact = findings.map(({ raw: _raw, ...rest }) => rest); // the report must not carry evidence
@@ -93,11 +95,16 @@ async function synthesize(
         "Compose the full VAPT report (REPORT MODE structure, sections 1-5) from the pre-computed triage results below. Use them as the substance of section 3 — do not re-triage. Group findings by severity.",
         "Markdown only. No exploit payloads, no raw traffic, no credentials — state that evidence is held in a separate access-controlled evidence log instead.",
         DATA_RULE + failureNote,
+        methodology
+          ? `Scan execution ledger — reproduce this verbatim in section 2 (Scope & Methodology), one bullet per step:\n\n${methodology}`
+          : "",
         dataTag("scope", ctx.scope),
         dataTag("findings", compact),
         dataTag("triage-results", results),
         dataTag("cve-cache", entries),
-      ].join("\n\n"),
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
     },
   ];
   // One call carries every result — warn before the provider truncates or rejects it.

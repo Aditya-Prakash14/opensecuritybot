@@ -1,0 +1,10 @@
+{
+  "name": "service-discovery",
+  "description": "TCP service and version discovery on the top 1000 ports.",
+  "appliesTo": ["host", "ip"],
+  "risk": "active",
+  "steps": [
+    { "tool": "nmap", "args": ["-sV", "--top-ports", "1000", "-T3", "-oG", "-", "{{target}}"] }
+  ],
+  "parsers": ["nmap-grepable"]
+}

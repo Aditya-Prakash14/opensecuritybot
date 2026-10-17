@@ -1,0 +1,11 @@
+{
+  "name": "http-baseline",
+  "description": "Passive HTTP fingerprint and low-noise misconfiguration/exposure templates.",
+  "appliesTo": ["url", "host"],
+  "risk": "passive",
+  "steps": [
+    { "tool": "httpx", "args": ["-json", "-silent", "-u", "{{target}}"] },
+    { "tool": "nuclei", "args": ["-jsonl", "-silent", "-severity", "low,medium,high,critical", "-tags", "exposure,misconfig", "-u", "{{target}}"] }
+  ],
+  "parsers": ["httpx-jsonl", "nuclei-jsonl"]
+}

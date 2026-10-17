@@ -6,7 +6,7 @@
 
 ![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-72%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -43,6 +43,7 @@ flowchart LR
 - ✅ **Deterministic verify** — every programmatic reply is schema-checked and every cited CVE is cross-checked against your local cache.
 - 📄 **Reports that ship** — executive summary through prioritized remediation roadmap, sections 1–5.
 - 💬 **Two ways to work** — a Claude-Code-style interactive session, or one-shot commands with `--json` for pipelines.
+- 🔒 **Reviewed scan skills** — scope-pinned, allowlisted playbooks (`nmap`, `nuclei`, `httpx`) whose exact argv you confirm; each run is written to an execution ledger that lands in the report's methodology section.
 - 🔌 **Any provider** — OpenRouter, Groq, OpenAI, Meta, Anthropic, Ollama… guided by a first-run wizard.
 
 ## Requirements
@@ -122,6 +123,42 @@ only when a finding references that CVE, so a full NVD-sized cache stays cheap.
 | `vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json] [-q]` | triage findings |
 | `vapt report -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--html] [--json] [-q]` | compile full VAPT report (Markdown + HTML) |
 | `vapt diff -b <baseline> -c <current> [-s <scope>] [-o <file>] [--html] [--json] [-q]` | compare baseline vs re-test findings (remediation delta verification) |
+| `vapt skills [--dir <dir>]` | list the reviewed scan skills |
+| `vapt scan --skill <name> --target <scope entry> [-s <scope>] [-o <dir>] [--ledger <path>] [--dry-run] [--yes] [-q]` | run a scope-pinned scan skill and write normalized findings |
+
+## Scan skills
+
+A **skill** is a reviewed, declarative playbook — not an LLM-generated command. The model
+reasons about findings; the shell never sees free-form input.
+
+```sh
+vapt skills                                                     # what is available
+vapt scan --skill http-baseline --target https://app.acme.com --dry-run
+vapt scan --skill http-baseline --target https://app.acme.com
+vapt report -f findings/http-baseline-*.json -s scope.json --html
+```
+
+Safety model (`src/runner.ts`, `src/skills.ts`):
+
+- Only `nmap`, `nuclei` and `httpx` may appear in a skill; every step is an argv array run
+  with `shell: false` — there is no command string to inject into.
+- `{{target}}` is the only placeholder. It is filled from the target you pass, which is
+  re-checked with `isInScope()` immediately before each step. Cloud metadata endpoints
+  (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`) are refused even if
+  someone lists them in scope.
+- Every step is printed with its exact argv and confirmed interactively (`--yes` for
+  non-interactive runs); each step has a timeout and a 10 MB output cap.
+- Each execution appends a line to `report/scan-ledger.jsonl` (tool, argv, exit code,
+  duration, stdout SHA-256). `vapt report` folds that ledger into the report's
+  **Scope & Methodology** section, so the report shows what was actually run.
+
+Output is normalized into the same findings format the rest of the pipeline already
+understands (httpx JSONL, nuclei JSONL, nmap grepable), so dedup, scope filtering, triage
+and reporting work unchanged.
+
+Adding your own skill is a code change, not configuration: drop a JSON file in `skills/`
+(see the two built-ins for the schema), re-read it, and have someone review the argv. A
+skill that cannot be reviewed should not be run.
 
 ## Interactive session
 
@@ -259,6 +296,10 @@ compared with the cached base score. Anything unverifiable sets
 | `src/diff.ts` | remediation delta comparison and reporting (Markdown + HTML) |
 | `src/workspace.ts` | multi-engagement workspace management and path resolution |
 | `src/cve-cache.ts` | lazy NVD cache index, on-demand NVD 2.0 API fetching |
+| `src/skills.ts` | scan-skill schema, loading and validation (allowlisted tools, `{{target}}` only) |
+| `src/runner.ts` | argv-only execution: scope re-check, confirmation, timeout, output cap, findings output |
+| `src/normalizers.ts` | httpx JSONL / nuclei JSONL / nmap grepable → normalized findings |
+| `src/ledger.ts` | append-only scan execution ledger, summarized into the report methodology |
 | `src/llm.ts` | LLM client (OpenAI chat/SSE + Anthropic native messages, retry, backoff) |
 | `src/ui.ts` | zero-dependency ANSI, spinner, boxes, progress bars, markdown rendering |
 | `src/agent-prompt.ts` | system prompt + prompt-building helpers |
@@ -268,10 +309,10 @@ compared with the cached base score. Anything unverifiable sets
 ## Tests
 
 ```sh
-npm test        # 40 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-fetch, verify,
-                # multi-findings, JSONL/ZAP parsing, deduplication, evidence capping, HTML report,
-                # retry/timeout (including stalled streams), prompt-data escaping, token estimation,
-                # streaming, config, diff (incl. fail-closed scope), Anthropic messages, workspace
+npm test        # 72 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
+                # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
+                # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
+                # Anthropic messages, workspace, scan skills, normalizers, runner, ledger
 ```
 
 ## Design notes and limitations
@@ -291,3 +332,7 @@ npm test        # 40 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-f
 - The synthesis prompt is one call; if its estimated size exceeds
   `VAPT_REPORT_MAX_PROMPT_TOKENS` (default 120000) a warning is logged — raise it for
   large-context models or split the engagement into batches.
+- `vapt scan` executes only reviewed skill argv with `shell: false`, re-checks scope before
+  every step and caps captured output at 10 MB. On timeout it kills the direct child; a
+  grandchild holding the pipe can delay completion (see the `shortcut:` note in
+  `src/runner.ts`). Skill files are code — review them like code.

@@ -4,6 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
 import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
 import { deduplicateFindings, loadFindings } from "./findings.js";
+import { loadLedger, summarizeLedger } from "./ledger.js";
 import { type ChatMessage, chatStream } from "./llm.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
@@ -304,8 +305,15 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         process.stderr.write(yellow("no in-scope findings loaded\n"));
         return;
       }
-      const outcome = await buildReport(state.findings, { scope: state.scope, cache: state.cache }, (m) =>
-        process.stderr.write(dim(m) + "\n"),
+      const ledger = loadLedger(join(opts.out, "scan-ledger.jsonl"));
+      if (ledger.length > 0) {
+        process.stderr.write(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger`) + "\n");
+      }
+      const outcome = await buildReport(
+        state.findings,
+        { scope: state.scope, cache: state.cache },
+        (m) => process.stderr.write(dim(m) + "\n"),
+        summarizeLedger(ledger),
       );
       process.stdout.write(outcome.markdown + "\n");
       try {

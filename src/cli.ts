@@ -1,15 +1,19 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
 import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
 import { deduplicateFindings, loadFindings } from "./findings.js";
+import { loadLedger, summarizeLedger } from "./ledger.js";
 import { TRIAGE_CONCURRENCY, buildReport, renderReportHtml, saveReport, saveReportHtml } from "./report.js";
+import { runSkill } from "./runner.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
+import { getSkill, loadSkills, skillApplies } from "./skills.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
-import { bold, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import { bold, coral, cyan, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import { compareFindings, printDiffSummary, renderDiffHtml, renderDiffMarkdown } from "./diff.js";
 import {
   createWorkspace,
@@ -196,7 +200,14 @@ program
     const { scope, findings, cache } = await prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
     mkdirSync(opts.out, { recursive: true }); // fail fast: a bad --out path must not cost N+1 LLM calls
     if (!opts.quiet) console.error(dim(`plan: report over ${findings.length} in-scope finding(s) — per-finding triage, then synthesis`));
-    const outcome = await buildReport(findings, { scope, cache }, opts.quiet ? undefined : (msg) => console.error(dim(msg)));
+    const ledger = loadLedger(join(opts.out, "scan-ledger.jsonl"));
+    if (!opts.quiet && ledger.length > 0) console.error(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger`));
+    const outcome = await buildReport(
+      findings,
+      { scope, cache },
+      opts.quiet ? undefined : (msg) => console.error(dim(msg)),
+      summarizeLedger(ledger),
+    );
     if (opts.json) {
       process.stdout.write(JSON.stringify({ scope, findingsCount: findings.length, ...outcome }, null, 2) + "\n");
     } else {
@@ -222,6 +233,98 @@ program
     }
     if (saveFailed) process.exitCode = 1;
   });
+
+program
+  .command("skills")
+  .description("list the reviewed scan skills available to `vapt scan`")
+  .option("--dir <dir>", "skills directory (default: VAPT_SKILLS_DIR or ./skills)")
+  .action((opts: { dir?: string }) => {
+    const skills = loadSkills(opts.dir);
+    if (skills.length === 0) {
+      console.log(dim("no skills found"));
+      return;
+    }
+    console.log(bold("\nScan skills"));
+    console.log(dim("─".repeat(50)));
+    for (const s of skills) {
+      const risk = s.risk === "active" ? red("active") : green("passive");
+      console.log(` ${bold(s.name)}  ${risk} ${dim(`· ${s.appliesTo.join("/")} · ${s.steps.map((st) => st.tool).join(" + ")}`)}`);
+      console.log(`   ${dim(s.description)}`);
+    }
+    console.log(dim("\nrun: vapt scan --skill <name> --target <scope entry>\n"));
+  });
+
+program
+  .command("scan")
+  .description("run a scope-pinned scan skill (reviewed argv only) and write normalized findings")
+  .requiredOption("--skill <name>", "skill to run (see `vapt skills`)")
+  .requiredOption("--target <target>", "one authorized target from scope.json")
+  .option("-s, --scope <path>", "confirmed scope file", "./scope.json")
+  .option("-o, --out <dir>", "findings output directory", "./findings")
+  .option("--ledger <path>", "append-only execution ledger", "./report/scan-ledger.jsonl")
+  .option("--dry-run", "print the exact commands without executing anything")
+  .option("-y, --yes", "skip per-step confirmation (required in non-interactive runs)")
+  .option("-q, --quiet", "suppress progress messages on stderr")
+  .action(
+    async (opts: {
+      skill: string;
+      target: string;
+      scope: string;
+      out: string;
+      ledger: string;
+      dryRun?: boolean;
+      yes?: boolean;
+      quiet?: boolean;
+    }) => {
+      const scope = loadScope(resolveWorkspacePath(opts.scope));
+      const entries = scopeEntries(scope);
+      const skill = getSkill(opts.skill);
+      if (!skillApplies(skill, opts.target)) {
+        throw new Error(`skill "${skill.name}" does not apply to ${opts.target} (applies to: ${skill.appliesTo.join(", ")})`);
+      }
+      if (!opts.dryRun && !opts.yes && !process.stdin.isTTY) {
+        throw new Error("confirmation needs a TTY — pass --yes for non-interactive runs");
+      }
+      const rl = !opts.dryRun && !opts.yes ? createInterface({ input: process.stdin, output: process.stderr }) : undefined;
+      try {
+        const result = await runSkill({
+          skill,
+          target: opts.target,
+          scopeEntries: entries,
+          outDir: opts.out,
+          ledgerPath: opts.ledger,
+          yes: opts.yes ?? false,
+          dryRun: opts.dryRun ?? false,
+          log: (m) => {
+            if (!opts.quiet) console.error(dim(m));
+          },
+          confirm: async (label, argv) => {
+            if (!rl) return false;
+            const answer = (await rl.question(`${cyan(`run ${label}`)}\n  ${dim(argv.join(" "))}\n${coral("execute?")} [y/N] `))
+              .trim()
+              .toLowerCase();
+            return answer === "y" || answer === "yes";
+          },
+        });
+        if (opts.dryRun) {
+          if (!opts.quiet) console.error(dim("dry run — nothing executed, nothing written"));
+          return;
+        }
+        if (result.findingsPath) {
+          console.error(green(`saved: ${result.findingsPath}`));
+          console.error(dim(`next: vapt report -f ${result.findingsPath} -s ${opts.scope}`));
+        } else {
+          console.error(yellow("no findings produced"));
+        }
+        if (result.failedSteps > 0) {
+          console.error(red(`${result.failedSteps}/${skill.steps.length} step(s) failed`));
+          process.exitCode = 1;
+        }
+      } finally {
+        rl?.close();
+      }
+    },
+  );
 
 program
   .command("diff")
