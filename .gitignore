@@ -5,3 +5,4 @@ dist/
 /cve-cache/
 /findings/
 /apps/docs/dist/
+/.vercel/
