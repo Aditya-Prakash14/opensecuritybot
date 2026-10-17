@@ -13,6 +13,7 @@ import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
 import { getSkill, loadSkills, skillApplies } from "./skills.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
+import { VERSION } from "./version.js";
 import { bold, coral, cyan, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
 import { compareFindings, printDiffSummary, renderDiffHtml, renderDiffMarkdown } from "./diff.js";
 import {
@@ -64,7 +65,7 @@ async function prepare(findingPath: string | string[], scopePath: string, cacheD
 const program = new Command();
 program
   .name("vapt")
-  .version("0.4.0")
+  .version(VERSION)
   .enablePositionalOptions() // subcommand flags (triage -f …) must not be swallowed by the program-level options
   .description("VAPT-Agent — triage, explain and report scanner findings (authorized engagements only)")
   .option("-f, --findings <path>", "findings JSON for the interactive session", "./findings.json")

@@ -1,0 +1,40 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # OIDC token; required for npm provenance attestations
+
+concurrency:
+  group: publish-npm
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # Fork-friendly: only the canonical repo publishes to npm.
+    if: github.repository_owner == 'Aditya-Prakash14'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+          cache: "npm"
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      # NPM_TOKEN is a granular npm access token with "read and write" permission
+      # for the opensecuritybot package on the public registry.
+      - run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

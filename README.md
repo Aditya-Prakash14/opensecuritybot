@@ -4,18 +4,19 @@
 
 **VAPT-Agent — the reasoning layer between your scanner and your report.**
 
-![version](https://img.shields.io/badge/version-0.4.0-blue)
+![version](https://img.shields.io/badge/version-0.5.0-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-72%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-73%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
 
 Local CLI reasoning layer for **authorized** vulnerability assessment and penetration-test
-engagements. It does not scan, exploit, or generate payloads — that happens upstream (nmap,
-Nuclei, OWASP ZAP, …). It takes their normalized output plus the operator-confirmed
-`scope.json` and turns it into triage calls, plain-language explanations, remediation steps
-and full VAPT reports via any OpenAI-compatible LLM.
+engagements. It never exploits or generates payloads. Findings come from upstream scanners
+(nmap, Nuclei, OWASP ZAP, …) — or from the built-in [reviewed scan skills](#scan-skills).
+Either way it takes the normalized output plus the operator-confirmed `scope.json` and turns
+it into triage calls, plain-language explanations, remediation steps and full VAPT reports
+via any OpenAI-compatible LLM.
 
 ```mermaid
 flowchart LR
@@ -53,6 +54,22 @@ flowchart LR
   Anthropic, Ollama, LM Studio, vLLM, …)
 
 ## Install and first run
+
+Install the published package:
+
+```sh
+npm install -g opensecuritybot   # gives you the global `vapt` command
+vapt setup
+```
+
+Or run it without installing:
+
+```sh
+npx opensecuritybot setup
+npx opensecuritybot triage -f findings.json -s scope.json
+```
+
+From a git checkout:
 
 ```sh
 npm install
@@ -309,7 +326,7 @@ compared with the cached base score. Anything unverifiable sets
 ## Tests
 
 ```sh
-npm test        # 72 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
+npm test        # 73 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
                 # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
                 # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
                 # Anthropic messages, workspace, scan skills, normalizers, runner, ledger

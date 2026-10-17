@@ -1,4 +1,5 @@
 import type { TriageResult } from "./types.js";
+import { VERSION } from "./version.js";
 
 function ansi(open: string): (s: string) => string {
   return (s) =>
@@ -89,7 +90,7 @@ export function box(lines: string[], title?: string): string {
 /**
  * Claude Code style avatar and brand banner.
  */
-export function renderAvatar(version = "0.4.0"): string {
+export function renderAvatar(version = VERSION): string {
   return [
     `  ${coral("╭──────────────╮")}  ${bold("opensecuritybot")} ${dim(`v${version}`)}`,
     `  ${coral("│")}  ${amber("⬡")}  ${coral("🛡️")}  ${amber("⬡")}   ${coral("│")}  ${cyan("The AI Security Reasoning Layer")}`,

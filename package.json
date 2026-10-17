@@ -1,6 +1,6 @@
 {
   "name": "opensecuritybot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "VAPT-Agent — local CLI that triages, explains and reports scanner findings for authorized engagements",
   "type": "module",
   "main": "./dist/cli.js",
@@ -17,11 +17,37 @@
     "node": ">=20"
   },
   "license": "MIT",
+  "author": "Aditya Prakash",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Aditya-Prakash14/opensecuritybot.git"
+  },
+  "homepage": "https://github.com/Aditya-Prakash14/opensecuritybot#readme",
+  "bugs": {
+    "url": "https://github.com/Aditya-Prakash14/opensecuritybot/issues"
+  },
+  "keywords": [
+    "vapt",
+    "pentest",
+    "penetration-testing",
+    "security",
+    "vulnerability",
+    "triage",
+    "llm",
+    "agent",
+    "cli",
+    "nuclei",
+    "nmap",
+    "zap"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "tsx src/cli.ts",
     "build": "tsc",
     "prepublishOnly": "npm run build && npm test",
-    "test": "node --import tsx --test test/core.test.ts test/scan.test.ts test/skills.test.ts test/ledger.test.ts test/runner.test.ts"
+    "test": "node --import tsx --test test/core.test.ts test/scan.test.ts test/skills.test.ts test/ledger.test.ts test/runner.test.ts test/version.test.ts"
   },
   "dependencies": {
     "commander": "^15.0.0"
