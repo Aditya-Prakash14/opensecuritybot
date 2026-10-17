@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
-import { loadFindings } from "./findings.js";
-import { markdownToHtml } from "./report.js";
+import { writeFileSync } from "node:fs";
+import { findingSignature, loadFindings, severityRank } from "./findings.js";
+import { escapeHtml, markdownToHtml } from "./report.js";
 import type { Finding } from "./types.js";
 import { bold, cyan, dim, green, red, severityColor, yellow } from "./ui.js";
 
@@ -19,27 +19,6 @@ export interface DiffResult {
   new: Finding[];
   persistent: PersistentFinding[];
   remediationRate: number;
-}
-
-function severityRank(s?: string): number {
-  switch ((s ?? "").toLowerCase()) {
-    case "critical": return 4;
-    case "high": return 3;
-    case "medium": return 2;
-    case "low": return 1;
-    default: return 0;
-  }
-}
-
-/**
- * Construct a unique identity key for a finding across scans.
- * Normalizes host/URL and matches by CVE (if available) or title/template_id.
- */
-export function findingSignature(f: Finding): string {
-  const normTarget = (f.target || "").toLowerCase().replace(/\/+$/, "");
-  const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
-  const titleKey = String(f.title || f.template_id || f.id || "").toLowerCase().trim();
-  return `${normTarget}::${cveKey ?? titleKey}`;
 }
 
 /**
@@ -248,10 +227,6 @@ export function renderDiffHtml(diff: DiffResult, options?: { baselinePath?: stri
   </div>
 </body>
 </html>`;
-}
-
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
 /**

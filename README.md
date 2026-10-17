@@ -6,7 +6,7 @@
 
 ![version](https://img.shields.io/badge/version-0.4.0-blue)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-34%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-40%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -161,10 +161,12 @@ cards.
 | `/report` | compile the full VAPT report and save it |
 | `/save [path]` | persist current session state and triaged findings to disk |
 | `/load [path]` | restore a saved session state from disk |
+| `/clear` | clear the screen |
 | `/help`, `/exit` | list commands / leave |
 
-**Anything else is a question** answered by the agent, streamed, grounded in the loaded
-scope, findings and triage results so far.
+`Tab` completes slash commands and finding ids (`/triage F-2`). Short aliases: `/t`, `/f`,
+`/r`, `/s`, `/q`, `/?`. **Anything else is a question** answered by the agent, streamed,
+grounded in the loaded scope, findings and triage results so far.
 
 ## One-shot usage
 
@@ -221,6 +223,10 @@ directory). Environment variables take precedence over the file:
 | `VAPT_LLM_TIMEOUT_MS` | `120000` | per-request cap; streaming defaults to `300000` |
 | `VAPT_LLM_TEMPERATURE` | not sent | only included when set — newer Claude models reject values below 1 |
 
+A `.env` in the current directory is loaded too, with a note on stderr. Prefer exported
+variables when running inside a directory you do not control — a `.env` there can redirect
+where findings are sent.
+
 > [!TIP]
 > For sensitive engagements, point the base URL at a local model (Ollama:
 > `http://localhost:11434/v1`) — finding evidence goes to whichever endpoint is configured.
@@ -229,8 +235,10 @@ directory). Environment variables take precedence over the file:
 
 Every programmatic reply passes two deterministic checks (`src/verify.ts`): the schema is
 validated structurally, and every CVE ID the model cites is cross-checked against
-`cve-cache/`. Anything not in the cache sets `flaggedForManualReview: true` with an
-`unverified — confirm manually` note. Keep your cache fresh for best results.
+`cve-cache/`. A malformed reply gets one corrective retry rather than being discarded.
+When the reply names exactly one cached CVE and one explicit CVSS score, the score is
+compared with the cached base score. Anything unverifiable sets
+`flaggedForManualReview: true` with a note. Keep your cache fresh for best results.
 
 ## Architecture
 
@@ -260,9 +268,10 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 ## Tests
 
 ```sh
-npm test        # 33 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-fetch, verify,
-                # multi-findings, JSONL/ZAP parsing, deduplication, HTML report, retry/timeout,
-                # rate backoff, token estimation, streaming, config, diff, Anthropic messages, workspace
+npm test        # 40 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-fetch, verify,
+                # multi-findings, JSONL/ZAP parsing, deduplication, evidence capping, HTML report,
+                # retry/timeout (including stalled streams), prompt-data escaping, token estimation,
+                # streaming, config, diff (incl. fail-closed scope), Anthropic messages, workspace
 ```
 
 ## Design notes and limitations
@@ -275,3 +284,10 @@ npm test        # 33 tests: scope, IPv6 CIDR, CIDR validation, cache, NVD auto-f
 - Streaming retries the connection once on network errors or 429/5xx (matching the
   non-streaming path). Once tokens have started flowing there is no retry — re-ask if the
   connection drops mid-answer.
+- Before triage/report, CVE ids referenced by in-scope findings and missing from the cache
+  are fetched from NVD and written to disk. NVD is rate-limited: the first run waits ~6s
+  per CVE (~0.7s with `VAPT_NVD_API_KEY`); at most 25 are fetched per run
+  (`VAPT_NVD_MAX`, `0` disables; `VAPT_NVD_DELAY_MS` overrides the wait).
+- The synthesis prompt is one call; if its estimated size exceeds
+  `VAPT_REPORT_MAX_PROMPT_TOKENS` (default 120000) a warning is logged — raise it for
+  large-context models or split the engagement into batches.

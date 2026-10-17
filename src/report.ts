@@ -2,12 +2,12 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
 import { findCveIds } from "./cve-cache.js";
-import { chat } from "./llm.js";
+import { type ChatMessage, chat, estimateMessageTokens } from "./llm.js";
 import { type TriageCtx, triageFindingJson } from "./triage.js";
 import type { CveEntry, Finding, TriageResult } from "./types.js";
 import { progressBar } from "./ui.js";
 
-const TRIAGE_CONCURRENCY = 4;
+export const TRIAGE_CONCURRENCY = 4;
 
 export interface ReportOutcome {
   markdown: string;
@@ -85,7 +85,7 @@ async function synthesize(
   const failureNote = failures.length
     ? `\n\nThese findings could not be triaged (processing error) — list each under its severity flagged as "not triaged — processing error": ${failures.join("; ")}`
     : "";
-  const content = await chat([
+  const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
@@ -99,7 +99,14 @@ async function synthesize(
         dataTag("cve-cache", entries),
       ].join("\n\n"),
     },
-  ]);
+  ];
+  // One call carries every result — warn before the provider truncates or rejects it.
+  const maxTokens = Number(process.env.VAPT_REPORT_MAX_PROMPT_TOKENS ?? 120_000);
+  const estimated = estimateMessageTokens(messages);
+  if (maxTokens > 0 && estimated > maxTokens) {
+    log?.(`warn: synthesis prompt is ~${estimated} tokens (limit ${maxTokens}) — may exceed the model context; raise VAPT_REPORT_MAX_PROMPT_TOKENS or split the engagement`);
+  }
+  const content = await chat(messages);
   return content.trim();
 }
 
@@ -108,7 +115,8 @@ export function markdownToHtml(md: string): string {
   let html = md
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;");
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 
   html = html.replace(/```([a-z0-9_-]*)\n([\s\S]*?)```/g, (_m, lang, code) => {
     return `<pre><code class="language-${lang}">${code.trim()}</code></pre>`;
@@ -121,7 +129,10 @@ export function markdownToHtml(md: string): string {
   html = html.replace(/^# (.*$)/gim, "<h1>$1</h1>");
   html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+  html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_m, text: string, url: string) =>
+    // Only safe schemes become links; javascript:/data: pairs stay as text.
+    /^(https?:\/\/|\/|#)/i.test(url) ? `<a href="${url}" target="_blank" rel="noopener noreferrer">${text}</a>` : text,
+  );
   html = html.replace(/^---$/gim, "<hr/>");
 
   html = html.replace(/((?:^\|.*\|\r?\n)+)/gm, (table) => {
@@ -151,6 +162,10 @@ export function markdownToHtml(md: string): string {
   return html;
 }
 
+export function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
 /** Generate a complete standalone responsive HTML report. */
 export function renderReportHtml(markdown: string, title = "VAPT Assessment Report"): string {
   const bodyHtml = markdownToHtml(markdown);
@@ -159,7 +174,7 @@ export function renderReportHtml(markdown: string, title = "VAPT Assessment Repo
 <head>
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>${title}</title>
+  <title>${escapeHtml(title)}</title>
   <style>
     :root {
       --bg: #0d1117;

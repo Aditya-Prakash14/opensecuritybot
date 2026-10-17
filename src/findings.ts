@@ -65,32 +65,50 @@ function parseRawFindingsData(content: string, path: string): unknown[] {
   }
 }
 
+const KEEP_KEYS = ["title", "description", "severity", "tool", "cve", "template_id", "template-id"];
+
 function normalizeFinding(raw: unknown): { finding: Finding; autoId: boolean } | null {
   if (!raw || typeof raw !== "object") return null;
   const o = raw as Record<string, unknown>;
   const target = pickString(o, TARGET_KEYS);
   if (!target) return null;
   const picked = pickString(o, ID_KEYS);
+  const finding: Finding = { id: picked ?? "", target };
+  for (const k of KEEP_KEYS) if (o[k] !== undefined) finding[k] = o[k];
+  // Bulk evidence lives only under `raw`, so MAX_RAW actually bounds what reaches a prompt.
   const size = JSON.stringify(raw).length;
-  return {
-    finding: { ...o, id: picked ?? "", target, raw: size > MAX_RAW ? `[evidence omitted: ${size} bytes]` : raw },
-    autoId: picked === undefined,
-  };
+  finding.raw = size > MAX_RAW ? `[evidence omitted: ${size} bytes]` : raw;
+  return { finding, autoId: picked === undefined };
 }
 
-/**
- * Deduplicate findings across multiple scanners based on target + (cve || title || id).
- * Merges tool names and retains the highest severity.
- */
+/** Identity for dedup and baseline/current matching: target + CVE, else target + title. */
+export function findingSignature(f: Finding): string {
+  const normTarget = (f.target || "").toLowerCase().replace(/\/+$/, "");
+  const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
+  const titleKey = String(f.title || f.template_id || f.id || "").toLowerCase().trim();
+  return `${normTarget}::${cveKey ?? titleKey}`;
+}
+
+/** critical=4 … info=0, unknown=-1. One ordering for sort, dedup and drift. */
+export function severityRank(s?: string): number {
+  switch ((s ?? "").toLowerCase()) {
+    case "critical": return 4;
+    case "high": return 3;
+    case "medium": return 2;
+    case "low": return 1;
+    case "info":
+    case "informational": return 0;
+    default: return -1;
+  }
+}
+
+/** Deduplicate findings across multiple scanners based on target + (cve || title || id). */
 export function deduplicateFindings(findings: Finding[]): { unique: Finding[]; mergedCount: number } {
   const map = new Map<string, Finding>();
   let mergedCount = 0;
 
   for (const f of findings) {
-    const normTarget = f.target.toLowerCase().replace(/\/+$/, "");
-    const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
-    const titleKey = String(f.title || f.template_id || f.id).toLowerCase().trim();
-    const sig = `${normTarget}::${cveKey ?? titleKey}`;
+    const sig = findingSignature(f);
 
     if (map.has(sig)) {
       const existing = map.get(sig)!;
@@ -107,16 +125,6 @@ export function deduplicateFindings(findings: Finding[]): { unique: Finding[]; m
   }
 
   return { unique: [...map.values()], mergedCount };
-}
-
-function severityRank(s?: string): number {
-  switch ((s ?? "").toLowerCase()) {
-    case "critical": return 4;
-    case "high": return 3;
-    case "medium": return 2;
-    case "low": return 1;
-    default: return 0;
-  }
 }
 
 /**

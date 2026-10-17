@@ -55,7 +55,9 @@ function llmConfig(): {
   base = base.replace(/\/+$/, "");
 
   // Only sent when explicitly set: newer Claude models reject temperature below 1.
-  const temperature = process.env.VAPT_LLM_TEMPERATURE ? Number(process.env.VAPT_LLM_TEMPERATURE) : undefined;
+  const rawTemp = process.env.VAPT_LLM_TEMPERATURE;
+  const parsedTemp = Number(rawTemp);
+  const temperature = rawTemp && Number.isFinite(parsedTemp) ? parsedTemp : undefined;
   return { base, model, key, temperature, isAnthropic };
 }
 
@@ -177,7 +179,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
       });
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e)); // network error or timeout — retry
-      await waitRetry();
+      if (attempt < 2) await waitRetry();
       continue;
     } finally {
       timeout.done();
@@ -185,7 +187,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
       lastErr = new Error(`LLM HTTP ${res.status}: ${detail}`);
-      if (RETRYABLE.has(res.status)) {
+      if (RETRYABLE.has(res.status) && attempt < 2) {
         await waitRetry(res, detail);
         continue;
       }
@@ -212,8 +214,9 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
   // Connection-level retry — same policy as chat(): retries on network errors or retryable HTTP status.
   let res!: Response;
   let lastErr: Error | null = null;
+  let timeout!: { signal: AbortSignal; done: () => void };
   for (let attempt = 0; attempt < 3; attempt++) {
-    const timeout = withTimeoutSignal(timeoutMs);
+    timeout = withTimeoutSignal(timeoutMs);
     try {
       res = await fetch(req.url, {
         method: "POST",
@@ -223,15 +226,15 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
       });
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e));
-      await waitRetry();
-      continue;
-    } finally {
       timeout.done();
+      if (attempt < 2) await waitRetry();
+      continue;
     }
     if (!res.ok) {
       const detail = (await res.text()).slice(0, 300);
       lastErr = new Error(`LLM HTTP ${res.status}: ${detail}`);
-      if (RETRYABLE.has(res.status)) {
+      timeout.done();
+      if (RETRYABLE.has(res.status) && attempt < 2) {
         await waitRetry(res, detail);
         continue;
       }
@@ -240,8 +243,14 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
     lastErr = null;
     break;
   }
-  if (lastErr) throw lastErr;
-  if (!res.body) throw new Error("LLM returned no response body");
+  if (lastErr) {
+    timeout.done();
+    throw lastErr;
+  }
+  if (!res.body) {
+    timeout.done();
+    throw new Error("LLM returned no response body");
+  }
 
   // Yield SSE deltas — works with both OpenAI choices[0].delta.content and Anthropic text_delta.
   const reader = res.body.getReader();
@@ -274,6 +283,7 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
       }
     }
   } finally {
+    timeout.done(); // the deadline now covers the whole stream, not just the connection
     try {
       await reader.cancel();
     } catch {

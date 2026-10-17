@@ -22,7 +22,14 @@ export function getActiveWorkspace(): string | null {
   return cfg?.activeWorkspace ?? null;
 }
 
+function assertWorkspaceName(name: string): void {
+  if (!/^[A-Za-z0-9._-]+$/.test(name)) {
+    throw new Error(`invalid workspace name "${name}" — use letters, digits, dot, underscore or dash`);
+  }
+}
+
 export function setActiveWorkspace(name: string): void {
+  assertWorkspaceName(name);
   const root = workspacesRoot();
   const dir = join(root, name);
   if (!existsSync(dir)) {
@@ -40,6 +47,7 @@ export function createWorkspace(
   name: string,
   options?: { engagement?: string; targets?: string[] },
 ): string {
+  assertWorkspaceName(name);
   const root = workspacesRoot();
   const dir = join(root, name);
   if (existsSync(dir)) {
@@ -55,9 +63,6 @@ export function createWorkspace(
     targets: options?.targets ?? ["example.com", "*.api.example.com", "10.10.0.0/24"],
   };
   writeFileSync(scopePath, JSON.stringify(scopeData, null, 2) + "\n", "utf8");
-
-  const findingsPath = join(dir, "findings.json");
-  writeFileSync(findingsPath, JSON.stringify([], null, 2) + "\n", "utf8");
 
   // If no workspace is active yet, automatically activate this one
   const cfg = loadConfig();

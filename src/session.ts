@@ -2,8 +2,8 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
-import { loadCveCache } from "./cve-cache.js";
-import { loadFindings } from "./findings.js";
+import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
+import { deduplicateFindings, loadFindings } from "./findings.js";
 import { type ChatMessage, chatStream } from "./llm.js";
 import { buildReport, saveReport } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
@@ -24,6 +24,7 @@ import {
   severityColor,
   spinner,
   streamMarkdown,
+  truncate,
   yellow,
 } from "./ui.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
@@ -45,6 +46,18 @@ interface SessionState {
 
 const padCmd = (s: string): string => s.padEnd(15);
 
+const COMMANDS = ["triage", "findings", "scope", "report", "save", "load", "clear", "help", "exit", "quit"];
+const ALIASES: Record<string, string> = { t: "triage", f: "findings", r: "report", s: "scope", "?": "help" };
+
+/** Tab completion for slash commands and finding ids after `/triage`. */
+export function slashCompleter(line: string, ids: string[]): [string[], string] {
+  const command = line.match(/^\/([a-z]*)$/);
+  if (command) return [COMMANDS.filter((c) => c.startsWith(command[1]!)).map((c) => "/" + c), line];
+  const triageId = line.match(/^\/triage\s+(\S*)$/);
+  if (triageId) return [ids.filter((id) => id.startsWith(triageId[1]!)), line];
+  return [[], line];
+}
+
 /** Interactive Claude-Code-style session: welcome card, slash commands, streamed answers. */
 export async function startSession(opts: SessionOptions): Promise<void> {
   if (!process.stdin.isTTY) {
@@ -56,23 +69,33 @@ export async function startSession(opts: SessionOptions): Promise<void> {
   const state: SessionState = { findings: [], cache: loadCveCache(opts.cache), results: new Map(), history: [] };
   let outOfScopeCount = 0;
 
+  let scopeNote: string | undefined;
+  let findingsNote: string | undefined;
   try {
     state.scope = loadScope(opts.scope);
-  } catch {
-    /* scope file not present */
+  } catch (e) {
+    scopeNote = (e as Error).message;
   }
 
   try {
     const loaded = loadFindings(opts.findings);
+    const { unique, mergedCount } = deduplicateFindings(loaded.findings);
+    if (mergedCount > 0) process.stderr.write(dim(`merged: ${mergedCount} duplicate finding(s) across scanners`) + "\n");
+    // No confirmed scope = no findings: nothing unverified may reach the model.
     if (state.scope) {
-      const { inScope, outOfScope } = filterInScope(loaded.findings, scopeEntries(state.scope));
+      const { inScope, outOfScope } = filterInScope(unique, scopeEntries(state.scope));
       state.findings = sortBySeverity(inScope);
       outOfScopeCount = outOfScope.length;
-    } else {
-      state.findings = sortBySeverity(loaded.findings);
     }
-  } catch {
-    /* findings file not present */
+  } catch (e) {
+    findingsNote = (e as Error).message;
+  }
+
+  const severityCounts: Record<string, number> = {};
+  for (const f of state.findings) {
+    const sev = String(f.severity ?? "info").toLowerCase();
+    const key = sev === "informational" ? "info" : sev;
+    severityCounts[key] = (severityCounts[key] ?? 0) + 1;
   }
 
   process.stderr.write("\n" + renderAvatar() + "\n\n");
@@ -84,11 +107,29 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       reportsDir: opts.out,
       model: cfg?.model,
       provider: cfg?.provider,
+      severityCounts,
     }) + "\n",
   );
-  process.stderr.write(`  ${dim("authorized engagements only · type /help for commands · /exit to quit")}\n\n`);
+  process.stderr.write(`  ${dim("authorized engagements only · tab completes · /help for commands · /exit to quit")}\n`);
+  if (scopeNote) process.stderr.write(`  ${yellow(`note: ${scopeNote}`)}\n`);
+  if (findingsNote) process.stderr.write(`  ${yellow(`note: ${findingsNote}`)}\n`);
+  if (!state.findings.length) {
+    process.stderr.write(
+      `  ${dim("hint: add a confirmed scope.json and drop scanner output at findings.json (or pass -f), then restart")}\n`,
+    );
+  }
+  process.stderr.write("\n");
 
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
+  // Populate the CVE cache before the first question: without it the model reasons blind and every cited CVE is flagged unverified.
+  await prefetchMissingCves(findCveIds(JSON.stringify(state.findings)), state.cache, opts.cache, (m) =>
+    process.stderr.write(dim(m) + "\n"),
+  );
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stderr,
+    completer: (line: string) => slashCompleter(line, state.findings.map((f) => f.id)),
+  });
   const onSigint = () => {
     process.stderr.write("\n" + dim("(Use /exit to quit)") + "\n");
   };
@@ -98,14 +139,14 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       let line: string;
       try {
         const engTitle = state.scope?.engagement ?? "engagement";
-        const promptBar = dim(`╭─ 🛡️  ${engTitle} · ${state.findings.length} findings · ${cfg?.model ?? "agent"} ─`);
+        const promptBar = dim(`╭─ 🛡️  ${engTitle} · ${state.results.size}/${state.findings.length} triaged · ${cfg?.model ?? "agent"} ─`);
         process.stderr.write(`${promptBar}\n`);
         line = (await rl.question(coral("╰─❯ "))).trim();
       } catch {
         break; // stdin closed (Ctrl+D)
       }
       if (!line) continue;
-      if (line === "/exit" || line === "/quit") break;
+      if (line === "/exit" || line === "/quit" || line === "/q") break;
       try {
         if (line.startsWith("/")) await handleCommand(line, state, opts);
         else await askAgent(line, state);
@@ -121,27 +162,39 @@ export async function startSession(opts: SessionOptions): Promise<void> {
 }
 
 async function handleCommand(line: string, state: SessionState, opts: SessionOptions): Promise<void> {
-  const [cmd = "", ...rest] = line.slice(1).split(/\s+/);
+  const [rawCmd = "", ...rest] = line.slice(1).split(/\s+/);
+  const cmd = ALIASES[rawCmd] ?? rawCmd;
   switch (cmd) {
     case "help":
       process.stdout.write(
         "\n" +
           box(
             [
-              `${bold(padCmd("/triage [id]"))}triages all in-scope findings, or one by id`,
-              `${bold(padCmd("/findings"))}the in-scope queue, severity-descending`,
-              `${bold(padCmd("/scope"))}the confirmed engagement targets`,
-              `${bold(padCmd("/report"))}compile the full VAPT report and save it`,
-              `${bold(padCmd("/save [path]"))}persist triaged results & history to disk`,
-              `${bold(padCmd("/load [path]"))}restore session state from disk`,
-              `${bold(padCmd("/help"))}this help · ${bold("/exit")} leaves`,
+              bold("Engagement"),
+              `${dim(padCmd("/findings"))}in-scope queue, triaged/queued`,
+              `${dim(padCmd("/scope"))}confirmed engagement targets`,
               "",
-              "Anything else is a question for the agent about the loaded engagement.",
+              bold("Analysis"),
+              `${dim(padCmd("/triage [id]"))}triage the queue, or one finding by id`,
+              `${dim(padCmd("/report"))}compile and save the full VAPT report`,
+              "",
+              bold("Session"),
+              `${dim(padCmd("/save [path]"))}persist triaged results & history`,
+              `${dim(padCmd("/load [path]"))}restore a saved session`,
+              `${dim(padCmd("/clear"))}clear the screen`,
+              `${dim(padCmd("/help"))}this help`,
+              `${dim(padCmd("/exit"))}leave`,
+              "",
+              dim("Tab completes commands and finding ids · anything else asks the agent."),
             ],
             "commands",
           ) +
           "\n\n",
       );
+      return;
+
+    case "clear":
+      process.stdout.write("\x1b[2J\x1b[3J\x1b[H");
       return;
 
     case "save": {
@@ -198,12 +251,19 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         process.stderr.write(yellow("no in-scope findings loaded\n"));
         return;
       }
+      const width = process.stdout.columns ?? 100;
+      const triaged = state.findings.filter((f) => state.results.has(f.id)).length;
+      process.stdout.write(
+        `\n${dim(`${state.findings.length} in-scope · ${triaged} triaged · ${state.findings.length - triaged} queued`)}\n`,
+      );
       for (const f of state.findings) {
         const mark = state.results.has(f.id) ? green("triaged") : dim("queued ");
+        const label = truncate(String(f.title ?? f.target), Math.max(20, width - 36));
         process.stdout.write(
-          `${f.id.padEnd(12)} ${severityColor(f.severity)(String(f.severity ?? "?").padEnd(9))} ${mark} ${f.title ?? f.target}\n`,
+          `${f.id.padEnd(12)} ${severityColor(f.severity)(String(f.severity ?? "?").padEnd(9))} ${mark} ${label}\n`,
         );
       }
+      process.stdout.write("\n");
       return;
     }
 
@@ -218,12 +278,13 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         return;
       }
       const ctx: TriageCtx = { scope: state.scope, cache: state.cache };
-      for (const f of queue) {
-        const sp = spinner(`Triaging ${f.id} (${f.severity ?? "?"})`);
+      for (const [i, f] of queue.entries()) {
+        const started = Date.now();
+        const sp = spinner(`Triaging ${f.id} (${f.severity ?? "?"}) ${dim(`[${i + 1}/${queue.length}]`)}`);
         try {
           const r = await triageFindingJson(f, ctx);
           state.results.set(f.id, r);
-          sp.stop();
+          sp.stop(green(`✓ ${f.id} triaged in ${((Date.now() - started) / 1000).toFixed(1)}s`));
           process.stdout.write(
             `\n${cyan("⏺")} ${bold(f.id)} — ${f.title ?? f.target} ${severityColor(f.severity)(`[${f.severity ?? "unknown"}]`)}\n\n${formatTriageResult(r)}\n`,
           );
@@ -267,13 +328,16 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
 }
 
 async function askAgent(question: string, state: SessionState): Promise<void> {
-  const compact = state.findings.slice(0, 60).map(({ raw: _raw, ...rest }) => rest);
+  const shown = state.findings.slice(0, 60);
+  const compact = shown.map(({ raw: _raw, ...rest }) => rest);
+  const results = shown.map((f) => state.results.get(f.id)).filter((r): r is TriageResult => Boolean(r));
+  const omitted = state.findings.length - shown.length;
   const context = [
-    `Interactive session. ${state.findings.length} in-scope findings loaded, ${state.results.size} triaged so far. Answer from the engagement data below.`,
+    `Interactive session. ${state.findings.length} in-scope findings loaded, ${state.results.size} triaged so far.${omitted > 0 ? ` Only the first ${shown.length} are included below (${omitted} omitted for context size).` : ""} Answer from the engagement data below.`,
     DATA_RULE,
     dataTag("scope", state.scope ?? { note: "no scope.json loaded" }),
     dataTag("findings", compact),
-    dataTag("triage-results", [...state.results.values()]),
+    dataTag("triage-results", results),
   ].join("\n\n");
   const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },

@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { Command } from "commander";
-import { loadCveCache } from "./cve-cache.js";
-import { loadFindings } from "./findings.js";
-import { buildReport, renderReportHtml, saveReport, saveReportHtml } from "./report.js";
+import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
+import { deduplicateFindings, loadFindings } from "./findings.js";
+import { TRIAGE_CONCURRENCY, buildReport, renderReportHtml, saveReport, saveReportHtml } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
@@ -26,8 +26,8 @@ interface Prepared {
   cache: Map<string, CveEntry>;
 }
 
-/** Load + scope-filter. Anything outside scope.json is dropped here, before any LLM call. */
-function prepare(findingPath: string | string[], scopePath: string, cacheDir: string, quiet = false): Prepared {
+/** Load + dedup + scope-filter. Anything outside scope.json is dropped here, before any LLM call. */
+async function prepare(findingPath: string | string[], scopePath: string, cacheDir: string, quiet = false): Promise<Prepared> {
   const resolvedScope = resolveWorkspacePath(scopePath);
   const resolvedCache = resolveWorkspacePath(cacheDir);
   const scope = loadScope(resolvedScope);
@@ -40,14 +40,21 @@ function prepare(findingPath: string | string[], scopePath: string, cacheDir: st
       : [findingPath];
   const paths = rawPaths.map((p) => resolveWorkspacePath(p));
   const { findings, skipped, duplicates } = loadFindings(paths);
-  const { inScope, outOfScope } = filterInScope(findings, entries);
+  const { unique, mergedCount } = deduplicateFindings(findings);
+  const { inScope, outOfScope } = filterInScope(unique, entries);
   if (!quiet) {
     for (const s of skipped) console.error(dim(`skip: ${s}`));
     for (const d of duplicates) console.error(yellow(`warn: duplicate finding id — ${d}`));
+    if (mergedCount > 0) console.error(dim(`merged: ${mergedCount} duplicate finding(s) across scanners`));
     for (const f of outOfScope) console.error(dim(`skip: out of scope — ${f.id} (${f.target})`));
   }
   if (inScope.length === 0) throw new Error("no in-scope findings to process");
-  return { scope, findings: sortBySeverity(inScope), cache: loadCveCache(resolvedCache) };
+
+  // Populate the CVE cache before triage: without it the model reasons blind and every cited CVE is flagged unverified.
+  const cache = loadCveCache(resolvedCache);
+  await prefetchMissingCves(findCveIds(JSON.stringify(inScope)), cache, resolvedCache, quiet ? undefined : (m) => console.error(dim(m)));
+
+  return { scope, findings: sortBySeverity(inScope), cache };
 }
 
 const program = new Command();
@@ -63,6 +70,21 @@ program
   .action(async (opts: { findings: string; scope: string; cache: string; out: string }) => {
     await startSession(opts);
   });
+
+program.addHelpText(
+  "after",
+  `
+Examples:
+  $ vapt setup                                connect a provider and model
+  $ vapt init                                 scaffold scope.json, cve-cache/, report/
+  $ vapt                                      interactive session
+  $ vapt triage -f findings.json --json       machine-readable triage
+  $ vapt report -f findings.json --html       full report (markdown + HTML)
+  $ vapt diff -b before.json -c after.json    remediation delta
+
+Engagement files: scope.json · findings.json · cve-cache/ · report/
+Docs and limitations: README.md`,
+);
 
 program
   .command("setup")
@@ -107,7 +129,7 @@ program
   .option("-q, --quiet", "suppress progress messages on stderr")
   .action(async (opts: { findings: string; scope: string; cache: string; id?: string; json?: boolean; quiet?: boolean }) => {
     await ensureConfigured();
-    const { scope, findings, cache } = prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
+    const { scope, findings, cache } = await prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
     const queue = opts.id ? findings.filter((f) => f.id === opts.id) : findings;
     if (queue.length === 0) throw new Error(`finding ${opts.id} not found among in-scope findings`);
     if (!opts.quiet) {
@@ -118,19 +140,29 @@ program
     const ctx: TriageCtx = { scope, cache };
     const results: TriageResult[] = [];
     let failed = 0;
-    for (const f of queue) {
-      if (opts.json) {
-        const sp = !opts.quiet ? spinner(`Triaging ${f.id} (${f.severity ?? "?"})`) : { stop: () => {} };
-        try {
-          results.push(await triageFindingJson(f, ctx));
-          sp.stop();
-        } catch (e) {
-          sp.stop();
-          failed++;
-          console.error(red(`fail: ${f.id}: ${(e as Error).message}`));
+    if (opts.json) {
+      // Concurrent like report(); results keep severity order and failures are reported individually.
+      const out: (TriageResult | null)[] = new Array(queue.length).fill(null);
+      let next = 0;
+      const worker = async () => {
+        while (next < queue.length) {
+          const i = next++;
+          const f = queue[i]!;
+          try {
+            out[i] = await triageFindingJson(f, ctx);
+            if (!opts.quiet) console.error(dim(`triaged ${f.id} (${f.severity ?? "?"})`));
+          } catch (e) {
+            failed++;
+            console.error(red(`fail: ${f.id}: ${(e as Error).message}`));
+          }
         }
-      } else {
-        process.stdout.write(findingHeader(f));
+      };
+      await Promise.all(Array.from({ length: Math.min(TRIAGE_CONCURRENCY, queue.length) }, worker));
+      results.push(...out.filter((r): r is TriageResult => r !== null));
+      process.stdout.write(JSON.stringify(results, null, 2) + "\n");
+    } else {
+      for (const [i, f] of queue.entries()) {
+        process.stdout.write(findingHeader(f, { index: i + 1, total: queue.length }));
         const sp = !opts.quiet ? spinner(`Triaging ${f.id}`) : { stop: () => {} };
         try {
           await streamMarkdown(triageFindingMarkdownStream(f, ctx), { onFirstChunk: () => sp.stop() });
@@ -143,7 +175,6 @@ program
         process.stdout.write("\n");
       }
     }
-    if (opts.json) process.stdout.write(JSON.stringify(results, null, 2) + "\n");
     if (failed > 0) {
       console.error(red(`${failed}/${queue.length} finding(s) failed`));
       process.exitCode = 1;
@@ -162,7 +193,7 @@ program
   .option("-q, --quiet", "suppress progress messages on stderr")
   .action(async (opts: { findings: string; scope: string; cache: string; out: string; html?: boolean; json?: boolean; quiet?: boolean }) => {
     await ensureConfigured();
-    const { scope, findings, cache } = prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
+    const { scope, findings, cache } = await prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
     mkdirSync(opts.out, { recursive: true }); // fail fast: a bad --out path must not cost N+1 LLM calls
     if (!opts.quiet) console.error(dim(`plan: report over ${findings.length} in-scope finding(s) — per-finding triage, then synthesis`));
     const outcome = await buildReport(findings, { scope, cache }, opts.quiet ? undefined : (msg) => console.error(dim(msg)));
@@ -206,15 +237,12 @@ program
     let baselineFindings = loadFindings(opts.baseline).findings;
     let currentFindings = loadFindings(opts.current).findings;
 
-    if (opts.scope && existsSync(opts.scope)) {
-      try {
-        const scope = loadScope(opts.scope);
-        const entries = scopeEntries(scope);
-        baselineFindings = filterInScope(baselineFindings, entries).inScope;
-        currentFindings = filterInScope(currentFindings, entries).inScope;
-      } catch (e) {
-        if (!opts.quiet) console.error(yellow(`warn: scope evaluation skipped (${(e as Error).message})`));
-      }
+    if (opts.scope) {
+      // A requested scope must be enforced: an unreadable one is an error, never a silent pass.
+      const scope = loadScope(opts.scope);
+      const entries = scopeEntries(scope);
+      baselineFindings = filterInScope(baselineFindings, entries).inScope;
+      currentFindings = filterInScope(currentFindings, entries).inScope;
     }
 
     const diff = compareFindings(baselineFindings, currentFindings);
@@ -232,6 +260,7 @@ program
 
     if (opts.out) {
       const content = opts.html ? renderDiffHtml(diff, { baselinePath: opts.baseline, currentPath: opts.current }) : md;
+      mkdirSync(dirname(opts.out), { recursive: true });
       writeFileSync(opts.out, content, "utf8");
       if (!opts.quiet) console.error(green(`saved: ${opts.out}`));
     } else if (opts.html) {

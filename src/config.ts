@@ -1,14 +1,17 @@
-import { chmodSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-try {
-  if (typeof process.loadEnvFile === "function") {
-    process.loadEnvFile();
+// A `.env` in the working directory can redirect where findings are sent — never load it silently.
+const envFile = join(process.cwd(), ".env");
+if (typeof process.loadEnvFile === "function" && existsSync(envFile)) {
+  try {
+    process.loadEnvFile(envFile);
+    process.stderr.write(`note: loaded ${envFile} (may override VAPT_* settings)\n`);
+  } catch {
+    /* unreadable .env — ignore */
   }
-} catch {
-  /* ignore missing or inaccessible .env */
 }
 
 export interface VaptConfig {

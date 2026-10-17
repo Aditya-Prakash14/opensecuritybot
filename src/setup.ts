@@ -63,17 +63,17 @@ export async function runSetup(): Promise<VaptConfig> {
       "\n" + box(PROVIDERS.map((p, i) => `${dim(`${i + 1}.`)} ${p.name}`), "setup — connect a model") + "\n\n",
     );
 
-    const pick = (await rl.question(`${cyan("provider")} ${dim(`[1-${PROVIDERS.length}]`)} (1): `)).trim() || "1";
+    const pick = (await rl.question(`${dim("1/3")} ${cyan("provider")} ${dim(`[1-${PROVIDERS.length}]`)} (1): `)).trim() || "1";
     const provider = PROVIDERS[Number(pick) - 1];
     if (!provider) throw new Error(`invalid provider choice: ${pick}`);
 
     let baseUrl = provider.baseUrl ?? "";
     if (!baseUrl) {
-      baseUrl = (await rl.question(`${cyan("base url")} ${dim("(OpenAI-compatible, e.g. http://localhost:11434/v1)")}: `)).trim();
+      baseUrl = (await rl.question(`${dim("1/3")} ${cyan("base url")} ${dim("(OpenAI-compatible, e.g. http://localhost:11434/v1)")}: `)).trim();
     }
     if (!baseUrl) throw new Error("base url is required");
 
-    const apiKey = (await maskedQuestion(rl, `${cyan("api key")} ${dim("(hidden as you type)")}: `)).trim();
+    const apiKey = (await maskedQuestion(rl, `${dim("2/3")} ${cyan("api key")} ${dim("(hidden as you type)")}: `)).trim();
     if (!apiKey && !/localhost|127\.0\.0\.1/.test(baseUrl)) {
       process.stderr.write(yellow("warn: no api key — fine for local endpoints, most providers will reject requests") + "\n");
     }
@@ -85,10 +85,10 @@ export async function runSetup(): Promise<VaptConfig> {
     let model: string;
     if (models.length) {
       for (const [i, m] of models.entries()) process.stderr.write(`  ${dim(`${i + 1}.`)} ${m}\n`);
-      const raw = (await rl.question(`${cyan("model")} ${dim(`[1-${models.length}]`)} (default: ${models[0]}): `)).trim();
+      const raw = (await rl.question(`${dim("3/3")} ${cyan("model")} ${dim(`[1-${models.length}]`)} (default: ${models[0]}): `)).trim();
       model = !raw ? models[0]! : /^\d+$/.test(raw) ? (models[Number(raw) - 1] ?? models[0]!) : raw;
     } else {
-      model = (await rl.question(`${cyan("model")} ${dim("(e.g. gpt-4o-mini, llama3.1, muse-spark-1.3)")}: `)).trim();
+      model = (await rl.question(`${dim("3/3")} ${cyan("model")} ${dim("(e.g. gpt-4o-mini, llama3.1, muse-spark-1.3)")}: `)).trim();
     }
     if (!model) throw new Error("model is required");
 

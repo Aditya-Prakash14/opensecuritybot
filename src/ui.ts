@@ -1,29 +1,23 @@
 import type { TriageResult } from "./types.js";
 
 function ansi(open: string): (s: string) => string {
-  return (s) => (process.stdout.isTTY || process.stderr.isTTY ? `\x1b[${open}m${s}\x1b[0m` : s);
+  return (s) =>
+    process.env.NO_COLOR === undefined && (process.stdout.isTTY || process.stderr.isTTY)
+      ? `\x1b[${open}m${s}\x1b[0m`
+      : s;
 }
 
 export const bold = ansi("1");
 export const dim = ansi("2");
 export const italic = ansi("3");
-export const underline = ansi("4");
 export const red = ansi("31");
 export const green = ansi("32");
 export const yellow = ansi("33");
-export const blue = ansi("34");
-export const magenta = ansi("35");
 export const cyan = ansi("36");
 
 // Claude-Code-inspired warm & crisp terminal palette
 export const coral = ansi("38;5;209");
 export const amber = ansi("38;5;214");
-export const copper = ansi("38;5;173");
-export const purple = ansi("38;5;141");
-export const emerald = ansi("38;5;78");
-export const ruby = ansi("38;5;203");
-export const slate = ansi("38;5;244");
-export const ice = ansi("38;5;117");
 
 export function severityColor(severity: string | undefined): (s: string) => string {
   switch ((severity ?? "").toLowerCase()) {
@@ -70,6 +64,13 @@ function padTo(s: string, width: number): string {
   return gap > 0 ? s + " ".repeat(gap) : s;
 }
 
+/** Single-line truncation with an ellipsis, for tables and boxes. */
+export function truncate(s: string, width: number): string {
+  const plain = stripAnsi(s);
+  if (width <= 1 || plain.length <= width) return s;
+  return plain.slice(0, width - 1) + "…";
+}
+
 /** Rounded-corner box with an optional title, Claude-style. */
 export function box(lines: string[], title?: string): string {
   const contentWidth = Math.max(0, ...lines.map(visibleLength));
@@ -107,25 +108,38 @@ export function renderHeroCard(info: {
   reportsDir?: string;
   model?: string;
   provider?: string;
+  severityCounts?: Record<string, number>;
 }): string {
   const rows = [
     `${dim("engagement")}  ${info.engagement ? bold(info.engagement) : yellow("None specified")}`,
     `${dim("findings")}    ${green(`● ${info.inScopeCount} in-scope`)}${info.skippedCount ? ` · ${yellow(`▲ ${info.skippedCount} skipped (out of scope)`)}` : ""}`,
+  ];
+  const counts = info.severityCounts;
+  if (counts && Object.values(counts).some((n) => n > 0)) {
+    const parts = ["critical", "high", "medium", "low", "info"]
+      .filter((k) => (counts[k] ?? 0) > 0)
+      .map((k) => severityColor(k)(`${counts[k]} ${k}`));
+    rows.push(`${dim("severity")}    ${parts.join(" · ")}`);
+  }
+  rows.push(
     `${dim("provider")}    ${cyan(info.provider ?? "configured")} ${info.model ? dim(`(${info.model})`) : ""}`,
     `${dim("reports")}     ${info.reportsDir ? dim(info.reportsDir) : dim("./report/")}`,
-  ];
+  );
   return box(rows, "opensecuritybot · session");
 }
 
 /**
  * Sleek card introducing a finding being triaged.
  */
-export function findingHeader(f: { id: string; target: string; title?: string; severity?: string; tool?: string }): string {
+export function findingHeader(
+  f: { id: string; target: string; title?: string; severity?: string; tool?: string },
+  position?: { index: number; total: number },
+): string {
   const title = f.title ?? f.target;
   const badge = severityBadge(f.severity);
   const line1 = `${bold(f.id)} — ${title}  ${badge}`;
   const line2 = `${dim("target:")} ${cyan(f.target)}${f.tool ? `  ${dim("·  tool:")} ${dim(f.tool)}` : ""}`;
-  return "\n" + box([line1, line2], `finding ${f.id}`) + "\n";
+  return "\n" + box([line1, line2], `finding ${f.id}${position ? ` · ${position.index}/${position.total}` : ""}`) + "\n";
 }
 
 /** Simple ASCII/ANSI progress bar: [████████░░░░░░░░] 50% (5/10) */

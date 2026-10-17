@@ -8,6 +8,9 @@ const CONFIDENCES = ["high", "medium", "low"];
 export function validateTriageResult(x: unknown): TriageResult {
   const o = x as any;
   if (!o || typeof o !== "object") throw new Error("triage result is not an object");
+  // Models often shout the enums ("HIGH"); normalize before the strict check.
+  if (typeof o.triage?.adjustedSeverity === "string") o.triage.adjustedSeverity = o.triage.adjustedSeverity.toLowerCase();
+  if (typeof o.confidence === "string") o.confidence = o.confidence.toLowerCase();
   const errs: string[] = [];
   if (typeof o.findingId !== "string") errs.push("findingId must be a string");
   if (typeof o.explanation !== "string") errs.push("explanation must be a string");
@@ -35,16 +38,45 @@ function stringsOf(r: TriageResult): string[] {
   ];
 }
 
-/** Deterministic VERIFY step: any CVE ID the model cites that is not in the cache gets flagged, never trusted. */
+/**
+ * Explicit CVSS score claims, e.g. "CVSS 8.8", "CVSS score: 9.8", "CVSSv3.1 7.5".
+ * Vector strings ("CVSS:3.1/AV:N/...") carry no score and are stripped first.
+ */
+function cvssClaims(text: string): number[] {
+  const plain = text.replace(/\bCVSS(?::| v?)?[23]\.\d\/[A-Z:\/.]+/gi, " ");
+  const re = /\bcvss\s*(?:v?[23](?:\.\d)?)?\s*(?:base\s*)?(?:score)?\s*[:=]?\s*(\d{1,2}(?:\.\d)?)\b/gi;
+  const out: number[] = [];
+  for (let m = re.exec(plain); m; m = re.exec(plain)) {
+    const n = Number(m[1]);
+    if (n >= 0 && n <= 10) out.push(n);
+  }
+  return [...new Set(out)];
+}
+
+/** Deterministic VERIFY step: unverifiable CVE IDs, and scores that contradict the cached advisory, get flagged. */
 export function crossCheckCves(result: TriageResult, index: Map<string, CveEntry>): TriageResult {
-  const unverified = findCveIds(stringsOf(result).join("\n")).filter((id) => !index.has(id));
-  if (unverified.length === 0) return result;
+  const text = stringsOf(result).join("\n");
+  const notes: string[] = [];
+
+  const unverified = findCveIds(text).filter((id) => !index.has(id));
+  if (unverified.length > 0) notes.push(`unverified — confirm manually: ${unverified.join(", ")}`);
+
+  // Only compare when the text pins exactly one cached CVE and makes exactly one score claim — otherwise ambiguous.
+  const cached = findCveIds(text)
+    .map((id) => index.get(id))
+    .filter((e): e is CveEntry => typeof e?.cvss === "number");
+  const claims = cvssClaims(text);
+  if (cached.length === 1 && claims.length === 1 && Math.abs(cached[0]!.cvss! - claims[0]!) > 0.05) {
+    notes.push(`CVSS ${claims[0]} conflicts with ${cached[0]!.id} base score ${cached[0]!.cvss}`);
+  }
+
+  if (notes.length === 0) return result;
   return {
     ...result,
     flaggedForManualReview: true,
     triage: {
       ...result.triage,
-      reasoning: `${result.triage.reasoning}\n\n[verify] unverified — confirm manually: ${unverified.join(", ")}`,
+      reasoning: `${result.triage.reasoning}\n\n[verify] ${notes.join("; ")}`,
     },
   };
 }

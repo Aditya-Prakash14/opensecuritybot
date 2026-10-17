@@ -1,6 +1,7 @@
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
 import { findCveIds } from "./cve-cache.js";
-import { chat, chatStream, parseJsonLoose } from "./llm.js";
+import { severityRank } from "./findings.js";
+import { type ChatMessage, chat, chatStream, parseJsonLoose } from "./llm.js";
 import type { CveEntry, Finding, Scope, TriageResult } from "./types.js";
 import { crossCheckCves, validateTriageResult } from "./verify.js";
 
@@ -9,12 +10,8 @@ export interface TriageCtx {
   cache: Map<string, CveEntry>;
 }
 
-const RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4, informational: 4 };
-
 export function sortBySeverity(findings: Finding[]): Finding[] {
-  return [...findings].sort(
-    (a, b) => (RANK[String(a.severity ?? "").toLowerCase()] ?? 5) - (RANK[String(b.severity ?? "").toLowerCase()] ?? 5),
-  );
+  return [...findings].sort((a, b) => severityRank(b.severity) - severityRank(a.severity));
 }
 
 function contextBlock(finding: Finding, ctx: TriageCtx): string {
@@ -25,14 +22,29 @@ function contextBlock(finding: Finding, ctx: TriageCtx): string {
 }
 
 export async function triageFindingJson(finding: Finding, ctx: TriageCtx): Promise<TriageResult> {
-  const content = await chat([
+  const messages: ChatMessage[] = [
     { role: "system", content: SYSTEM_PROMPT },
     {
       role: "user",
       content: `Triage this single finding. Output ONLY one JSON object matching the OUTPUT SCHEMA, no prose, no code fences.\n\n${DATA_RULE}\n\n${contextBlock(finding, ctx)}`,
     },
-  ]);
-  const parsed = validateTriageResult(parseJsonLoose(content));
+  ];
+  const content = await chat(messages);
+  let parsed: TriageResult;
+  try {
+    parsed = validateTriageResult(parseJsonLoose(content));
+  } catch (e) {
+    // One repair pass: a schema slip should not discard the whole triage.
+    const repaired = await chat([
+      ...messages,
+      { role: "assistant", content },
+      {
+        role: "user",
+        content: `That reply failed validation: ${(e as Error).message}. Return ONLY a corrected JSON object matching the OUTPUT SCHEMA — no prose, no code fences.`,
+      },
+    ]);
+    parsed = validateTriageResult(parseJsonLoose(repaired));
+  }
   // A model-echoed findingId is not authoritative — force the id of the finding we triaged.
   return crossCheckCves({ ...parsed, findingId: finding.id }, ctx.cache);
 }

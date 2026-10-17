@@ -69,11 +69,6 @@ export function validateScopeEntry(entry: string): void {
   }
 }
 
-/** IPv6 ranges the matcher cannot handle yet — callers should warn instead of skipping silently. */
-export function ipv6RangeEntries(entries: string[]): string[] {
-  return entries.filter((e) => e.includes(":") && /^\[?[0-9a-f:]+\]?\/\d+$/i.test(e.trim()));
-}
-
 function hostOf(value: string): string {
   const v = value.trim();
   try {
