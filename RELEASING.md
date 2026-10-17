@@ -48,15 +48,22 @@ Then create a GitHub Release for the tag. That triggers
 `.github/workflows/publish.yml`, which re-runs build + tests and publishes with
 provenance.
 
+One-time setup: on npmjs.com, `opensecuritybot` → Settings → Trusted Publisher →
+GitHub Actions, owner `Aditya-Prakash14`, repository `opensecuritybot`, workflow
+`publish.yml`. After that the workflow needs **no token** — npm verifies it via OIDC.
+
 ## 5. Manual publish (fallback)
 
 ```sh
-npm login                 # or: export NPM_TOKEN=...
-npm publish --access public --provenance
+npm login
+npm publish --access public
 ```
 
 `prepublishOnly` runs `npm run build && npm test`, so a failing test blocks the
-publish.
+publish. A manual publish cannot carry provenance (that is OIDC-only) and will
+prompt for a 2FA one-time password — bypass-2FA tokens are being deprecated for
+direct publishing, so expect the prompt. The same applies to `npm stage reject`
+and `npm stage approve`.
 
 ## 6. Verify
 

@@ -29,12 +29,15 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: "npm"
 
+      # Trusted publishing needs npm >= 11.5.1; the Node 22 image ships older.
+      - name: Update npm
+        run: npm install -g npm@latest
+
       - run: npm ci
       - run: npm run build
       - run: npm test
 
-      # NPM_TOKEN is a granular npm access token with "read and write" permission
-      # for the opensecuritybot package on the public registry.
+      # No token: npm verifies this workflow via OIDC (id-token: write above).
+      # One-time setup on npmjs.com: opensecuritybot → Settings → Trusted Publisher
+      # → GitHub Actions: Aditya-Prakash14/opensecuritybot, workflow "publish.yml".
       - run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
