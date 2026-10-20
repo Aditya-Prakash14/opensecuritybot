@@ -70,6 +70,9 @@ export function crossCheckCves(result: TriageResult, index: Map<string, CveEntry
     notes.push(`CVSS ${claims[0]} conflicts with ${cached[0]!.id} base score ${cached[0]!.cvss}`);
   }
 
+  const owasp = result.triage.owaspCategory;
+  if (owasp !== null && !/^A(0[1-9]|10):2021\b/.test(owasp)) notes.push(`owaspCategory "${owasp}" is not an OWASP Top 10 (2021) id`);
+
   if (notes.length === 0) return result;
   return {
     ...result,

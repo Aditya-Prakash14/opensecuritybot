@@ -2,8 +2,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { NORMALIZERS } from "./normalizers.js";
+
 export const TOOL_ALLOWLIST = ["nmap", "nuclei", "httpx"] as const;
-export const PARSER_NAMES = ["httpx-jsonl", "nuclei-jsonl", "nmap-grepable"] as const;
 
 export type TargetKind = "url" | "host" | "ip";
 
@@ -105,8 +106,8 @@ function validateSkill(raw: unknown, file: string): Skill {
   if (!Array.isArray(rawParsers) || rawParsers.length === 0) throw new Error(`${file}: parsers must be a non-empty array`);
   const parsers: string[] = [];
   for (const parser of rawParsers as unknown[]) {
-    if (typeof parser !== "string" || !(PARSER_NAMES as readonly string[]).includes(parser)) {
-      throw new Error(`${file}: unknown parser "${String(parser)}" (allowed: ${PARSER_NAMES.join(", ")})`);
+    if (typeof parser !== "string" || !(NORMALIZERS as readonly string[]).includes(parser)) {
+      throw new Error(`${file}: unknown parser "${String(parser)}" (allowed: ${NORMALIZERS.join(", ")})`);
     }
     parsers.push(parser);
   }

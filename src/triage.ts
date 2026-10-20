@@ -8,6 +8,7 @@ import { crossCheckCves, validateTriageResult } from "./verify.js";
 export interface TriageCtx {
   scope: Scope;
   cache: Map<string, CveEntry>;
+  resultsPath?: string; // triage-cache.json: reuse and analyst overrides across report runs
 }
 
 export function sortBySeverity(findings: Finding[]): Finding[] {

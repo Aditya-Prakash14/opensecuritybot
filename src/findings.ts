@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { Finding } from "./types.js";
+import { stripControl } from "./ui.js";
 
 const TARGET_KEYS = ["target", "host", "url", "endpoint", "matched_at", "matchedAt", "matched-at", "asset"];
 const ID_KEYS = ["id", "findingId", "template_id", "template-id", "_id", "alertRef", "pluginId"];
@@ -67,8 +68,17 @@ function parseRawFindingsData(content: string, path: string): unknown[] {
 
 const KEEP_KEYS = ["title", "description", "severity", "tool", "cve", "template_id", "template-id"];
 
-function normalizeFinding(raw: unknown): { finding: Finding; autoId: boolean } | null {
-  if (!raw || typeof raw !== "object") return null;
+/** Scanner output is attacker-influenced: strip terminal control chars from every string. */
+function cleanStrings(v: unknown): unknown {
+  if (typeof v === "string") return stripControl(v);
+  if (Array.isArray(v)) return v.map(cleanStrings);
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [stripControl(k), cleanStrings(x)]));
+  return v;
+}
+
+function normalizeFinding(input: unknown): { finding: Finding; autoId: boolean } | null {
+  if (!input || typeof input !== "object") return null;
+  const raw = cleanStrings(input);
   const o = raw as Record<string, unknown>;
   const target = pickString(o, TARGET_KEYS);
   if (!target) return null;

@@ -70,7 +70,7 @@ vapt init -d engagements/acme
 ## vapt triage
 
 ```sh
-vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json] [-q]
+vapt triage -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--id <id>] [--json] [-q]
 ```
 
 | Option | Default | Description |
@@ -204,7 +204,7 @@ vapt workspace current
 
 ## Environment variables
 
-Environment variables take precedence over the config file. A `.env` in the current working directory is loaded too, with a note on stderr.
+Environment variables take precedence over the config file. A `.env` in the current working directory is loaded only when `VAPT_LOAD_DOTENV=1` is exported.
 
 | Variable | Default | Description |
 | --- | --- | --- |
@@ -214,7 +214,7 @@ Environment variables take precedence over the config file. A `.env` in the curr
 | `VAPT_LLM_PROVIDER` | — | only `anthropic` has special meaning (native messages API detection) |
 | `VAPT_LLM_TIMEOUT_MS` | `120000` non-streaming, `300000` streaming | when set, applies to both paths |
 | `VAPT_LLM_TEMPERATURE` | not sent | included only when set and numeric |
-| `VAPT_LLM_MAX_TOKENS` | `4096` | Anthropic native requests only |
+| `VAPT_LLM_MAX_TOKENS` | `16000` | Anthropic native requests only; lower it for older Claude models that cap output at 4096 |
 | `VAPT_LLM_RETRY_DELAY_MS` | `2000` | fallback retry wait when the response gives no retry hint; capped at 60000 |
 | `VAPT_CONFIG_DIR` | `~/.config/vapt` | config directory, and parent of the workspaces root |
 | `VAPT_NVD_API_KEY` | — | sent to the NVD API; shortens prefetch waits |

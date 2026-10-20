@@ -48,8 +48,9 @@
     "build": "tsc",
     "docs:build": "node apps/docs/build.mjs",
     "docs:dev": "node apps/docs/serve.mjs",
+    "eval": "tsx src/eval.ts",
     "prepublishOnly": "npm run build && npm test",
-    "test": "node --import tsx --test test/core.test.ts test/scan.test.ts test/skills.test.ts test/ledger.test.ts test/runner.test.ts test/version.test.ts"
+    "test": "node --import tsx --test test/core.test.ts test/scan.test.ts test/skills.test.ts test/ledger.test.ts test/runner.test.ts test/version.test.ts test/hardening.test.ts test/bugfix.test.ts test/tui.test.ts"
   },
   "dependencies": {
     "commander": "^15.0.0"

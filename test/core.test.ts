@@ -58,7 +58,8 @@ function cacheDir(): string {
 
 test("scope: host, subdomain, wildcard, CIDR, out-of-scope", () => {
   assert.equal(isInScope("https://example.com/login?x=1", ENTRIES), true);
-  assert.equal(isInScope("vpn.example.com:443", ENTRIES), true);
+  assert.equal(isInScope("vpn.example.com:443", ENTRIES), false, "a bare host does not authorize its subdomains");
+  assert.equal(isInScope("vpn.example.com:443", ["*.example.com"]), true);
   assert.equal(isInScope("apps.api.example.com", ENTRIES), true);
   assert.equal(isInScope("10.10.0.55", ENTRIES), true);
   assert.equal(isInScope("http://10.10.1.7:8080", ENTRIES), false);
@@ -337,7 +338,9 @@ test("report: triages each finding, then synthesizes; failures are noted", async
   assert.ok(logs.some((l) => l.includes("triaged [")));
   assert.equal(out.failures.length, 1);
   assert.match(out.failures[0]!, /F-B/);
-  assert.equal(out.markdown, "REPORT MD");
+  assert.ok(out.markdown.startsWith("REPORT MD"));
+  assert.match(out.markdown, /model `stub` .* system prompt sha256:[a-f0-9]{12}/);
+  assert.equal(out.provenance.model, "stub");
   assert.match(prompts[3]!, /not triaged/);
   assert.ok(!prompts[3]!.includes("SECRET-EVIDENCE"), "synthesis prompt must not contain raw evidence");
 });
@@ -770,12 +773,14 @@ test("llm: buildLlmRequest adapts payloads for Anthropic native messages", () =>
     assert.equal(req.headers["anthropic-version"], "2023-06-01");
 
     const parsed = JSON.parse(req.body);
-    assert.equal(parsed.system, "You are a senior security researcher.");
+    assert.deepEqual(parsed.system, [
+      { type: "text", text: "You are a senior security researcher.", cache_control: { type: "ephemeral" } },
+    ]);
     assert.equal(parsed.model, "claude-sonnet-4-6");
     assert.equal(parsed.messages.length, 1);
     assert.equal(parsed.messages[0].role, "user");
     assert.equal(parsed.messages[0].content, "Analyze finding F-1.");
-    assert.equal(parsed.max_tokens, 4096);
+    assert.equal(parsed.max_tokens, 16000);
   } finally {
     process.env = origEnv;
   }

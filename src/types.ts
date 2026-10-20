@@ -17,6 +17,9 @@ export interface Finding {
 export interface Scope {
   engagement?: string;
   targets: Array<string | Record<string, unknown>>;
+  exclude?: string[]; // never in scope, even when a target matches
+  notBefore?: string; // ISO date: active scanning not allowed before
+  notAfter?: string; // ISO date: active scanning not allowed after
   [k: string]: unknown;
 }
 
@@ -26,6 +29,7 @@ export interface CveEntry {
   cvss?: number;
   severity?: string;
   references: string[];
+  kev?: boolean; // on the CISA Known Exploited Vulnerabilities catalog
 }
 
 /** Per-finding output schema (programmatic mode). */

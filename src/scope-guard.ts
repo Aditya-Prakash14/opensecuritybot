@@ -9,11 +9,37 @@ export function loadScope(path: string): Scope {
   } catch {
     throw new Error(`scope file not found or unreadable at ${path} — enforcement requires a confirmed scope.json`);
   }
-  const targets = (raw as Scope)?.targets;
+  const scope = raw as Scope;
+  const targets = scope?.targets;
   if (!Array.isArray(targets) || targets.length === 0) {
     throw new Error(`${path}: scope has no non-empty targets[] — refusing to run`);
   }
-  return raw as Scope;
+  if (scope.exclude !== undefined && (!Array.isArray(scope.exclude) || scope.exclude.some((e) => typeof e !== "string"))) {
+    throw new Error(`${path}: exclude must be an array of strings`);
+  }
+  for (const e of scope.exclude ?? []) {
+    // Matching is per host: "acme.com/admin" would silently exclude all of acme.com.
+    const rest = e.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+    if (rest.includes("/") && !/^[^/]+\/\d{1,3}$/.test(rest)) {
+      throw new Error(`${path}: exclude entry "${e}" has a path — exclusions match whole hosts (or CIDR ranges) only`);
+    }
+  }
+  for (const k of ["notBefore", "notAfter"] as const) {
+    if (scope[k] !== undefined && (typeof scope[k] !== "string" || Number.isNaN(Date.parse(scope[k])))) {
+      throw new Error(`${path}: ${k} must be an ISO date string`);
+    }
+  }
+  return scope;
+}
+
+/** Active testing only inside the rules-of-engagement window; triage of collected data is not limited. */
+export function assertScanWindow(scope: Scope, now: Date = new Date()): void {
+  if (scope.notBefore && now < new Date(scope.notBefore)) {
+    throw new Error(`testing window opens ${scope.notBefore} — refusing to scan`);
+  }
+  if (scope.notAfter && now > new Date(scope.notAfter)) {
+    throw new Error(`testing window closed ${scope.notAfter} — refusing to scan`);
+  }
 }
 
 const TARGET_KEYS = ["host", "ip", "url", "domain", "name", "cidr", "target"];
@@ -31,8 +57,10 @@ export function scopeEntries(scope: Scope): string[] {
       }
     }
   }
+  // Exclusions travel as "!entry" so every isInScope caller enforces them.
+  for (const e of scope.exclude ?? []) if (e.trim()) out.add("!" + e.trim().replace(/^!/, ""));
   out.delete("");
-  if (out.size === 0) {
+  if (![...out].some((e) => !e.startsWith("!"))) {
     throw new Error(
       "scope produced no matchable entries — expected string targets or objects with host/ip/url/domain/name/cidr/target keys",
     );
@@ -43,7 +71,7 @@ export function scopeEntries(scope: Scope): string[] {
 
 /** Validate CIDR notation when slash prefix is present on an IP target. */
 export function validateScopeEntry(entry: string): void {
-  const trimmed = unbracket(entry.trim());
+  const trimmed = unbracket(entry.trim().replace(/^!/, ""));
   const slash = trimmed.lastIndexOf("/");
   if (slash < 0) return;
   const right = trimmed.slice(slash + 1);
@@ -69,7 +97,8 @@ export function validateScopeEntry(entry: string): void {
   }
 }
 
-function hostOf(value: string): string {
+/** Host with scheme, path, port and brackets stripped; lowercased. */
+export function hostOf(value: string): string {
   const v = value.trim();
   try {
     const u = new URL(v);
@@ -77,36 +106,39 @@ function hostOf(value: string): string {
   } catch {
     /* not a URL — fall through */
   }
-  return unbracket(stripPort(v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!)).toLowerCase();
+  const raw = v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!;
+  const bracketed = raw.match(/^\[([^\]]*)\]/); // "[v6]:port" — the port is outside the brackets
+  return (bracketed ? bracketed[1]! : stripPort(raw)).toLowerCase();
 }
 
+/** Exclusions ("!entry") win over inclusions. */
 export function isInScope(target: string, entries: string[]): boolean {
   const host = hostOf(target);
   const lowerTarget = target.trim().toLowerCase();
-  for (const entry of entries) {
-    const cidr = cidrOf(entry.trim());
-    if (cidr) {
-      const ip = ipv4num(host);
-      if (ip !== null && inCidr(ip, cidr)) return true;
-      continue;
-    }
-    const v6cidr = ipv6CidrOf(entry.trim());
-    if (v6cidr) {
-      const ip6 = ipv6num(host);
-      if (ip6 !== null && inIpv6Cidr(ip6, v6cidr)) return true;
-      continue;
-    }
-    const pattern = hostPattern(entry);
-    if (!pattern) continue;
-    if (pattern.startsWith("*.")) {
-      const base = pattern.slice(2);
-      if (host === base || host.endsWith("." + base)) return true;
-      continue;
-    }
-    if (host === pattern || host.endsWith("." + pattern)) return true;
-    if (lowerTarget === entry.trim().toLowerCase()) return true; // non-host targets (exact strings)
+  const hit = (e: string) => matchesEntry(host, lowerTarget, e);
+  if (entries.some((e) => e.startsWith("!") && hit(e.slice(1)))) return false;
+  return entries.some((e) => !e.startsWith("!") && hit(e));
+}
+
+function matchesEntry(host: string, lowerTarget: string, entry: string): boolean {
+  const cidr = cidrOf(entry.trim());
+  if (cidr) {
+    const ip = ipv4num(host);
+    return ip !== null && inCidr(ip, cidr);
   }
-  return false;
+  const v6cidr = ipv6CidrOf(entry.trim());
+  if (v6cidr) {
+    const ip6 = ipv6num(host);
+    return ip6 !== null && inIpv6Cidr(ip6, v6cidr);
+  }
+  const pattern = hostOf(entry);
+  if (!pattern) return false;
+  if (pattern.startsWith("*.")) {
+    const base = pattern.slice(2);
+    return host === base || host.endsWith("." + base);
+  }
+  // A bare host authorizes only itself; subdomains need an explicit *.wildcard.
+  return host === pattern || lowerTarget === entry.trim().toLowerCase(); // second: non-host targets (exact strings)
 }
 
 export function filterInScope(findings: Finding[], entries: string[]): { inScope: Finding[]; outOfScope: Finding[] } {
@@ -114,18 +146,6 @@ export function filterInScope(findings: Finding[], entries: string[]): { inScope
   const outOfScope: Finding[] = [];
   for (const f of findings) (isInScope(f.target, entries) ? inScope : outOfScope).push(f);
   return { inScope, outOfScope };
-}
-
-function hostPattern(entry: string): string {
-  return unbracket(
-    stripPort(
-      entry
-        .trim()
-        .toLowerCase()
-        .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "")
-        .split("/")[0]!,
-    ),
-  );
 }
 
 /** Strip a trailing :port — but never from IPv6-shaped values (more than one colon). */
