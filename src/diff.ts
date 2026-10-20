@@ -1,8 +1,7 @@
-import { writeFileSync } from "node:fs";
-import { findingSignature, loadFindings, severityRank } from "./findings.js";
+import { findingSignature, severityRank } from "./findings.js";
 import { escapeHtml, markdownToHtml } from "./report.js";
 import type { Finding } from "./types.js";
-import { bold, cyan, dim, green, red, severityColor, yellow } from "./ui.js";
+import { bold, dim, green, red, yellow } from "./ui.js";
 
 export interface PersistentFinding {
   baseline: Finding;
@@ -230,16 +229,16 @@ export function renderDiffHtml(diff: DiffResult, options?: { baselinePath?: stri
 }
 
 /**
- * Print a concise ANSI-colored diff summary to stderr/stdout.
+ * Print a concise ANSI-colored diff summary to stderr (stdout is reserved for data).
  */
 export function printDiffSummary(diff: DiffResult): void {
-  console.log(`\n${bold("Remediation Delta Summary")}`);
-  console.log(dim("─".repeat(50)));
-  console.log(`  Baseline Findings:    ${bold(String(diff.baselineTotal))}`);
-  console.log(`  Current Findings:     ${bold(String(diff.currentTotal))}`);
-  console.log(`  Resolved (Remediated): ${green(bold(String(diff.resolved.length)))}`);
-  console.log(`  Persistent (Pending): ${diff.persistent.length > 0 ? yellow(bold(String(diff.persistent.length))) : green("0")}`);
-  console.log(`  New Findings:         ${diff.new.length > 0 ? red(bold(String(diff.new.length))) : green("0")}`);
-  console.log(`  Remediation Rate:     ${green(bold(`${diff.remediationRate}%`))}`);
-  console.log(dim("─".repeat(50)) + "\n");
+  console.error(`\n${bold("Remediation Delta Summary")}`);
+  console.error(dim("─".repeat(50)));
+  console.error(`  Baseline Findings:    ${bold(String(diff.baselineTotal))}`);
+  console.error(`  Current Findings:     ${bold(String(diff.currentTotal))}`);
+  console.error(`  Resolved (Remediated): ${green(bold(String(diff.resolved.length)))}`);
+  console.error(`  Persistent (Pending): ${diff.persistent.length > 0 ? yellow(bold(String(diff.persistent.length))) : green("0")}`);
+  console.error(`  New Findings:         ${diff.new.length > 0 ? red(bold(String(diff.new.length))) : green("0")}`);
+  console.error(`  Remediation Rate:     ${green(bold(`${diff.remediationRate}%`))}`);
+  console.error(dim("─".repeat(50)) + "\n");
 }

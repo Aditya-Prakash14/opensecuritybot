@@ -3,9 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import process from "node:process";
 
-// A `.env` in the working directory can redirect where findings are sent — never load it silently.
+// A `.env` in the working directory can redirect where findings are sent — load it only on explicit opt-in.
 const envFile = join(process.cwd(), ".env");
-if (typeof process.loadEnvFile === "function" && existsSync(envFile)) {
+if (process.env.VAPT_LOAD_DOTENV === "1" && typeof process.loadEnvFile === "function" && existsSync(envFile)) {
   try {
     process.loadEnvFile(envFile);
     process.stderr.write(`note: loaded ${envFile} (may override VAPT_* settings)\n`);

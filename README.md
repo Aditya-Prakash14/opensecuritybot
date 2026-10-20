@@ -7,7 +7,7 @@
 ![version](https://img.shields.io/badge/version-0.5.2-blue)
 [![npm](https://img.shields.io/npm/v/opensecuritybot.svg)](https://www.npmjs.com/package/opensecuritybot)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-74%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -115,10 +115,20 @@ vapt init                      # writes scope.json, cve-cache/, report/
 **1. Edit `scope.json`** — the authorized targets:
 
 ```json
-{ "engagement": "Acme Q4", "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"] }
+{
+  "engagement": "Acme Q4",
+  "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"],
+  "exclude": ["pay.api.acme.com"],
+  "notBefore": "2026-11-01T00:00:00Z",
+  "notAfter": "2026-11-30T23:59:59Z"
+}
 ```
 
-Matches exact hosts, subdomains, `*.wildcards`, IPv4 CIDR and IPv6 CIDR ranges.
+Matches exact hosts, `*.wildcards` (base domain and subdomains), IPv4 CIDR and IPv6 CIDR
+ranges. A bare host authorizes only itself: `acme.com` does **not** cover `app.acme.com`;
+list `*.acme.com` for that. `exclude` entries are never in scope, even when a target
+matches. `notBefore`/`notAfter` bound when `vapt scan` may run; triage and reporting are
+not time-limited.
 
 **2. Drop scanner output at `findings.json`** — an array or `{ "findings": [...] }`, straight
 from Nuclei/ZAP/nmap. Targets are picked up from `target`, `host`, `url`, `endpoint`,
@@ -138,7 +148,7 @@ only when a finding references that CVE, so a full NVD-sized cache stays cheap.
 | `vapt setup` | provider/API-key/model wizard → `~/.config/vapt/config.json` |
 | `vapt init [-d <dir>]` | scaffold a workspace: `scope.json`, `cve-cache/`, `report/` |
 | `vapt workspace [list\|create\|use\|current]` | multi-engagement workspace management |
-| `vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json] [-q]` | triage findings |
+| `vapt triage -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--id <id>] [--json] [-q]` | triage findings (`--json` reuses `<dir>/triage-cache.json`) |
 | `vapt report -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--html] [--json] [-q]` | compile full VAPT report (Markdown + HTML) |
 | `vapt diff -b <baseline> -c <current> [-s <scope>] [-o <file>] [--html] [--json] [-q]` | compare baseline vs re-test findings (remediation delta verification) |
 | `vapt skills [--dir <dir>]` | list the reviewed scan skills |
@@ -162,17 +172,28 @@ Safety model (`src/runner.ts`, `src/skills.ts`):
   with `shell: false` — there is no command string to inject into.
 - `{{target}}` is the only placeholder. It is filled from the target you pass, which is
   re-checked with `isInScope()` immediately before each step. Cloud metadata endpoints
-  (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`) are refused even if
-  someone lists them in scope.
+  (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`) and all link-local
+  addresses are refused even if someone lists them in scope, and a hostname is resolved
+  before each step so one that points at them is refused too.
 - Every step is printed with its exact argv and confirmed interactively (`--yes` for
   non-interactive runs); each step has a timeout and a 10 MB output cap.
 - Each execution appends a line to `report/scan-ledger.jsonl` (tool, argv, exit code,
-  duration, stdout SHA-256). `vapt report` folds that ledger into the report's
-  **Scope & Methodology** section, so the report shows what was actually run.
+  duration, stdout SHA-256), hash-chained to the line before it. `vapt report` folds that
+  ledger into the report's **Scope & Methodology** section, with the chain status (`intact`,
+  or `broken at line N` if the file was edited), so the report shows what was actually run.
 
 Output is normalized into the same findings format the rest of the pipeline already
 understands (httpx JSONL, nuclei JSONL, nmap grepable), so dedup, scope filtering, triage
 and reporting work unchanged.
+
+Bundled skills (run `vapt skills` for the live list):
+
+- `http-baseline` (passive) — `httpx` fingerprint + `nuclei` exposure/misconfig templates; the default first look at a web target.
+- `web-fingerprint` (passive) — `httpx -tech-detect -title -status-code -web-server` then `nuclei -tags tech`; identify the stack before deeper work.
+- `cve-scan` (active) — `nuclei -tags cve -severity medium,high,critical`; the known-CVE pass once scope is confirmed (runs for minutes).
+- `exposed-panels` (passive) — `nuclei -tags panel,login`; surface admin/login interfaces that should not be public.
+- `takeover-check` (passive) — `nuclei -tags takeover`; catch dangling DNS records pointing at unclaimed services.
+- `service-discovery` (active) — `nmap -sV --top-ports 1000`; TCP service and version discovery.
 
 Adding your own skill is a code change, not configuration: drop a JSON file in `skills/`
 (see the two built-ins for the schema), re-read it, and have someone review the argv. A
@@ -278,13 +299,21 @@ directory). Environment variables take precedence over the file:
 | `VAPT_LLM_TIMEOUT_MS` | `120000` | per-request cap; streaming defaults to `300000` |
 | `VAPT_LLM_TEMPERATURE` | not sent | only included when set — newer Claude models reject values below 1 |
 
-A `.env` in the current directory is loaded too, with a note on stderr. Prefer exported
-variables when running inside a directory you do not control — a `.env` there can redirect
-where findings are sent.
+A `.env` in the current directory is loaded only when `VAPT_LOAD_DOTENV=1` is exported — a
+`.env` in a directory you do not control could otherwise redirect where findings are sent.
+
+| Variable | Default | Notes |
+| -------- | ------- | ----- |
+| `VAPT_LLM_MAX_TOKENS` | `16000` | Anthropic output cap; a reply cut off at the limit ends with a visible `[truncated: …]` marker. Older Claude models cap at 4096 and reject higher values — lower this for them |
+| `VAPT_KEV` | on | `0` skips the daily CISA KEV catalog download (a cached copy is still used) |
 
 > [!TIP]
 > For sensitive engagements, point the base URL at a local model (Ollama:
 > `http://localhost:11434/v1`) — finding evidence goes to whichever endpoint is configured.
+> Before it leaves the machine, credentials in the data (Authorization/Cookie values, bearer
+> tokens, JWTs, private keys, AWS/GitHub/Slack/OpenAI/Anthropic keys, `password=`-style
+> pairs, `user:pass@` in URLs) are replaced with `[REDACTED]`. Treat this as a safety net,
+> not a guarantee — redaction is pattern-based.
 
 ## The verify step
 
@@ -293,7 +322,31 @@ validated structurally, and every CVE ID the model cites is cross-checked agains
 `cve-cache/`. A malformed reply gets one corrective retry rather than being discarded.
 When the reply names exactly one cached CVE and one explicit CVSS score, the score is
 compared with the cached base score. Anything unverifiable sets
-`flaggedForManualReview: true` with a note. Keep your cache fresh for best results.
+`flaggedForManualReview: true` with a note, and so does an `owaspCategory` that is not an
+OWASP Top 10 (2021) id. Keep your cache fresh for best results.
+
+CVEs on the [CISA Known Exploited Vulnerabilities](https://www.cisa.gov/known-exploited-vulnerabilities-catalog)
+catalog are marked `kev: true` in the data the model sees, and the remediation roadmap puts
+them first. The catalog is downloaded at most once a day into `cve-cache/kev-catalog.json`.
+
+Scanner and model text is stripped of terminal control characters, so a hostile page title
+cannot drive your terminal.
+
+## Provenance, triage cache and evaluation
+
+- Every report ends with a footer naming the tool version, model, endpoint host, a sha256
+  prefix of the system prompt and the generation time; `report --json` carries the same data
+  under `provenance`.
+- The system prompt is sent with Anthropic prompt caching. It is ~1.2k tokens, so caching engages
+  on models with a 512/1024-token minimum; on Opus 4.5/4.6 and Haiku 4.5 (4096 minimum) it silently
+  does not, and you pay full input price.
+- `vapt report`, `vapt triage --json` and the session's `/triage` share `<out>/triage-cache.json`, keyed by the exact finding,
+  model and prompt. Re-runs reuse it instead of paying for the call again. To override the
+  model, edit an entry (e.g. set `isLikelyTruePositive` to `false`); the edit stands until the
+  finding, the model or the prompt changes. Delete the file to re-triage everything.
+- `npm run eval [-- labeled.json]` triages a labeled set with your configured model and prints
+  verdict and severity agreement. `examples/eval/labeled.json` is a five-item seed; replace
+  it with findings your team has labeled.
 
 ## Documentation site
 
@@ -344,10 +397,12 @@ rendered from the repo root so they cannot drift. GitHub Pages deploys on every 
 ## Tests
 
 ```sh
-npm test        # 74 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
+npm test        # 84 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
                 # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
                 # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
-                # Anthropic messages, workspace, scan skills, normalizers, runner, ledger
+                # Anthropic messages, workspace, scan skills, normalizers, runner, ledger,
+                # redaction, control chars, scope exclusions/window, ledger hash chain,
+                # triage cache, KEV
 ```
 
 ## Design notes and limitations

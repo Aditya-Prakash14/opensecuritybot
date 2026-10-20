@@ -3,18 +3,18 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
-import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
+import { findCveIds, isKnownExploited, loadCveCache, markKnownExploited, prefetchMissingCves } from "./cve-cache.js";
 import { deduplicateFindings, loadFindings } from "./findings.js";
-import { loadLedger, summarizeLedger } from "./ledger.js";
-import { TRIAGE_CONCURRENCY, buildReport, renderReportHtml, saveReport, saveReportHtml } from "./report.js";
+import { loadLedger, summarizeLedger, verifyLedger } from "./ledger.js";
+import { TRIAGE_CONCURRENCY, buildReport, renderReportHtml, saveReport, saveReportHtml, triageMemo } from "./report.js";
 import { runSkill } from "./runner.js";
-import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
+import { assertScanWindow, filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
 import { getSkill, loadSkills, skillApplies } from "./skills.js";
-import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
+import { type TriageCtx, sortBySeverity, triageFindingMarkdownStream } from "./triage.js";
 import { VERSION } from "./version.js";
-import { bold, coral, cyan, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import { bold, coral, cyan, dim, findingHeader, green, red, spinner, streamMarkdown, yellow } from "./ui.js";
 import { compareFindings, printDiffSummary, renderDiffHtml, renderDiffMarkdown } from "./diff.js";
 import {
   createWorkspace,
@@ -57,7 +57,10 @@ async function prepare(findingPath: string | string[], scopePath: string, cacheD
 
   // Populate the CVE cache before triage: without it the model reasons blind and every cited CVE is flagged unverified.
   const cache = loadCveCache(resolvedCache);
-  await prefetchMissingCves(findCveIds(JSON.stringify(inScope)), cache, resolvedCache, quiet ? undefined : (m) => console.error(dim(m)));
+  const cveIds = findCveIds(JSON.stringify(inScope));
+  const log = quiet ? undefined : (m: string) => console.error(dim(m));
+  await prefetchMissingCves(cveIds, cache, resolvedCache, log);
+  await markKnownExploited(cveIds, cache, resolvedCache, log);
 
   return { scope, findings: sortBySeverity(inScope), cache };
 }
@@ -129,10 +132,11 @@ program
   .requiredOption("-f, --findings <path>", 'normalized findings JSON (array or { "findings": [...] })')
   .option("-s, --scope <path>", "confirmed scope file", "./scope.json")
   .option("-c, --cache <dir>", "NVD cve-cache directory", "./cve-cache")
+  .option("-o, --out <dir>", "directory holding triage-cache.json (shared with `report`)", "./report")
   .option("--id <findingId>", "triage only one finding by id")
   .option("--json", "emit structured JSON instead of markdown")
   .option("-q, --quiet", "suppress progress messages on stderr")
-  .action(async (opts: { findings: string; scope: string; cache: string; id?: string; json?: boolean; quiet?: boolean }) => {
+  .action(async (opts: { findings: string; scope: string; cache: string; out: string; id?: string; json?: boolean; quiet?: boolean }) => {
     await ensureConfigured();
     const { scope, findings, cache } = await prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
     const queue = opts.id ? findings.filter((f) => f.id === opts.id) : findings;
@@ -148,13 +152,14 @@ program
     if (opts.json) {
       // Concurrent like report(); results keep severity order and failures are reported individually.
       const out: (TriageResult | null)[] = new Array(queue.length).fill(null);
+      const memo = triageMemo(join(opts.out, "triage-cache.json"));
       let next = 0;
       const worker = async () => {
         while (next < queue.length) {
           const i = next++;
           const f = queue[i]!;
           try {
-            out[i] = await triageFindingJson(f, ctx);
+            out[i] = await memo.triage(f, ctx);
             if (!opts.quiet) console.error(dim(`triaged ${f.id} (${f.severity ?? "?"})`));
           } catch (e) {
             failed++;
@@ -163,11 +168,12 @@ program
         }
       };
       await Promise.all(Array.from({ length: Math.min(TRIAGE_CONCURRENCY, queue.length) }, worker));
+      memo.save(opts.quiet ? undefined : (m) => console.error(dim(m)));
       results.push(...out.filter((r): r is TriageResult => r !== null));
       process.stdout.write(JSON.stringify(results, null, 2) + "\n");
     } else {
       for (const [i, f] of queue.entries()) {
-        process.stdout.write(findingHeader(f, { index: i + 1, total: queue.length }));
+        process.stdout.write(findingHeader(f, { index: i + 1, total: queue.length, kev: isKnownExploited(f, cache) }));
         const sp = !opts.quiet ? spinner(`Triaging ${f.id}`) : { stop: () => {} };
         try {
           await streamMarkdown(triageFindingMarkdownStream(f, ctx), { onFirstChunk: () => sp.stop() });
@@ -201,13 +207,16 @@ program
     const { scope, findings, cache } = await prepare(opts.findings, opts.scope, opts.cache, opts.quiet);
     mkdirSync(opts.out, { recursive: true }); // fail fast: a bad --out path must not cost N+1 LLM calls
     if (!opts.quiet) console.error(dim(`plan: report over ${findings.length} in-scope finding(s) — per-finding triage, then synthesis`));
-    const ledger = loadLedger(join(opts.out, "scan-ledger.jsonl"));
-    if (!opts.quiet && ledger.length > 0) console.error(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger`));
+    const ledgerPath = join(opts.out, "scan-ledger.jsonl");
+    const ledger = loadLedger(ledgerPath);
+    const chain = ledger.length > 0 ? verifyLedger(ledgerPath) : undefined;
+    if (!opts.quiet && ledger.length > 0) console.error(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger (hash chain ${chain})`));
+    if (chain?.startsWith("broken")) console.error(yellow(`warn: scan ledger hash chain ${chain} — the ledger was modified`));
     const outcome = await buildReport(
       findings,
-      { scope, cache },
+      { scope, cache, resultsPath: join(opts.out, "triage-cache.json") },
       opts.quiet ? undefined : (msg) => console.error(dim(msg)),
-      summarizeLedger(ledger),
+      summarizeLedger(ledger, chain),
     );
     if (opts.json) {
       process.stdout.write(JSON.stringify({ scope, findingsCount: findings.length, ...outcome }, null, 2) + "\n");
@@ -279,6 +288,7 @@ program
     }) => {
       const scope = loadScope(resolveWorkspacePath(opts.scope));
       const entries = scopeEntries(scope);
+      assertScanWindow(scope);
       const skill = getSkill(opts.skill);
       if (!skillApplies(skill, opts.target)) {
         throw new Error(`skill "${skill.name}" does not apply to ${opts.target} (applies to: ${skill.appliesTo.join(", ")})`);
@@ -338,12 +348,14 @@ program
   .option("--json", "emit structured diff JSON to stdout")
   .option("-q, --quiet", "suppress progress messages and console summary")
   .action(async (opts: { baseline: string; current: string; scope?: string; out?: string; html?: boolean; json?: boolean; quiet?: boolean }) => {
+    opts.baseline = resolveWorkspacePath(opts.baseline);
+    opts.current = resolveWorkspacePath(opts.current);
     let baselineFindings = loadFindings(opts.baseline).findings;
     let currentFindings = loadFindings(opts.current).findings;
 
     if (opts.scope) {
       // A requested scope must be enforced: an unreadable one is an error, never a silent pass.
-      const scope = loadScope(opts.scope);
+      const scope = loadScope(resolveWorkspacePath(opts.scope));
       const entries = scopeEntries(scope);
       baselineFindings = filterInScope(baselineFindings, entries).inScope;
       currentFindings = filterInScope(currentFindings, entries).inScope;
@@ -369,7 +381,7 @@ program
       if (!opts.quiet) console.error(green(`saved: ${opts.out}`));
     } else if (opts.html) {
       process.stdout.write(renderDiffHtml(diff, { baselinePath: opts.baseline, currentPath: opts.current }) + "\n");
-    } else if (opts.quiet) {
+    } else {
       process.stdout.write(md + "\n");
     }
   });

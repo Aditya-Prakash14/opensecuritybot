@@ -1,5 +1,5 @@
 import { loadConfig } from "./config.js";
-import { countdownSpinner } from "./ui.js";
+import { countdownSpinner, stripControl } from "./ui.js";
 
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
@@ -10,6 +10,7 @@ const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const DEFAULT_BASE = "https://api.openai.com/v1";
 const DEFAULT_TIMEOUT_MS = 120_000;
 const DEFAULT_STREAM_TIMEOUT_MS = 300_000;
+const TRUNCATED = "\n\n[truncated: the model hit its output token limit — raise VAPT_LLM_MAX_TOKENS or use a larger model]";
 
 function withTimeoutSignal(timeoutMs: number): { signal: AbortSignal; done: () => void } {
   const controller = new AbortController();
@@ -61,6 +62,18 @@ function llmConfig(): {
   return { base, model, key, temperature, isAnthropic };
 }
 
+/** Model and endpoint host, for report provenance. */
+export function llmIdentity(): { model: string; endpoint: string } {
+  const { base, model } = llmConfig();
+  let endpoint = base;
+  try {
+    endpoint = new URL(base).host;
+  } catch {
+    /* keep the raw base */
+  }
+  return { model, endpoint };
+}
+
 function headers(key: string | undefined): Record<string, string> {
   return { "content-type": "application/json", ...(key ? { authorization: `Bearer ${key}` } : {}) };
 }
@@ -98,8 +111,11 @@ export function buildLlmRequest(messages: ChatMessage[], stream = false): {
     const payload: Record<string, unknown> = {
       model,
       messages: nonSystem,
-      max_tokens: Number(process.env.VAPT_LLM_MAX_TOKENS) || 4096,
-      ...(systemParts.length > 0 ? { system: systemParts.join("\n\n") } : {}),
+      max_tokens: Number(process.env.VAPT_LLM_MAX_TOKENS) || 16000,
+      // The system prompt is identical on every call: let Anthropic cache it.
+      ...(systemParts.length > 0
+        ? { system: [{ type: "text", text: systemParts.join("\n\n"), cache_control: { type: "ephemeral" } }] }
+        : {}),
       ...(temperature !== undefined ? { temperature } : {}),
       ...(stream ? { stream: true } : {}),
     };
@@ -169,6 +185,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
 
   for (let attempt = 0; attempt < 3; attempt++) {
     let res: Response;
+    let text: string;
     const timeout = withTimeoutSignal(timeoutMs);
     try {
       res = await fetch(req.url, {
@@ -177,6 +194,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
         body: req.body,
         signal: timeout.signal,
       });
+      text = await res.text(); // the deadline covers the body read too, not just the headers
     } catch (e) {
       lastErr = e instanceof Error ? e : new Error(String(e)); // network error or timeout — retry
       if (attempt < 2) await waitRetry();
@@ -185,7 +203,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
       timeout.done();
     }
     if (!res.ok) {
-      const detail = (await res.text()).slice(0, 300);
+      const detail = text.slice(0, 300);
       lastErr = new Error(`LLM HTTP ${res.status}: ${detail}`);
       if (RETRYABLE.has(res.status) && attempt < 2) {
         await waitRetry(res, detail);
@@ -193,7 +211,7 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
       }
       throw lastErr;
     }
-    const json = ((await res.json()) as any);
+    const json = JSON.parse(text) as any;
     let content: string | undefined;
     if (typeof json?.choices?.[0]?.message?.content === "string") {
       content = json.choices[0].message.content;
@@ -201,7 +219,8 @@ export async function chat(messages: ChatMessage[]): Promise<string> {
       content = json.content.map((c: any) => c?.text ?? "").join("");
     }
     if (typeof content !== "string" || !content.trim()) throw new Error("LLM returned empty content");
-    return content;
+    const truncated = json?.choices?.[0]?.finish_reason === "length" || json?.stop_reason === "max_tokens";
+    return stripControl(content) + (truncated ? TRUNCATED : "");
   }
   throw lastErr ?? new Error("LLM call failed");
 }
@@ -276,7 +295,9 @@ export async function* chatStream(messages: ChatMessage[]): AsyncGenerator<strin
             (parsed?.type === "content_block_delta" && parsed?.delta?.type === "text_delta"
               ? parsed.delta.text
               : undefined);
-          if (typeof delta === "string" && delta) yield delta;
+          if (typeof delta === "string" && delta) yield stripControl(delta);
+          // Some providers put the last text and the limit signal in the same chunk: text first, then the marker.
+          if (parsed?.choices?.[0]?.finish_reason === "length" || parsed?.delta?.stop_reason === "max_tokens") yield TRUNCATED;
         } catch {
           /* not a complete JSON frame — ignore */
         }

@@ -1,0 +1,10 @@
+{
+  "name": "exposed-panels",
+  "description": "Find exposed admin/login panels (nuclei panel and login tags), low-noise detection.",
+  "appliesTo": ["url", "host"],
+  "risk": "passive",
+  "steps": [
+    { "tool": "nuclei", "args": ["-jsonl", "-silent", "-tags", "panel,login", "-u", "{{target}}"], "timeoutMs": 600000 }
+  ],
+  "parsers": ["nuclei-jsonl"]
+}

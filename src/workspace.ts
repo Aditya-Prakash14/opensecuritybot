@@ -1,7 +1,6 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { configDir, loadConfig, saveConfig } from "./config.js";
-import { bold, cyan, dim, green, yellow } from "./ui.js";
 
 export interface WorkspaceInfo {
   name: string;
@@ -9,8 +8,6 @@ export interface WorkspaceInfo {
   isActive: boolean;
   engagement?: string;
   targetCount: number;
-  hasFindings: boolean;
-  createdAt: Date;
 }
 
 export function workspacesRoot(): string {
@@ -97,18 +94,7 @@ export function listWorkspaces(): WorkspaceInfo[] {
         /* ignore invalid scope in list */
       }
     }
-    const hasFindings = existsSync(join(dir, "findings.json"));
-    const stat = statSync(dir);
-
-    results.push({
-      name: entry.name,
-      path: dir,
-      isActive: entry.name === active,
-      engagement,
-      targetCount,
-      hasFindings,
-      createdAt: stat.birthtime,
-    });
+    results.push({ name: entry.name, path: dir, isActive: entry.name === active, engagement, targetCount });
   }
 
   return results.sort((a, b) => a.name.localeCompare(b.name));
