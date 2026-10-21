@@ -27,7 +27,7 @@ None of the argv comes from the model at runtime. The only substitution is `{{ta
 
 ## Safety model
 
-- Tool allowlist: only `nmap`, `nuclei` and `httpx` are valid step tools. Anything else is rejected at load time.
+- Tool allowlist: only `nmap`, `nuclei`, `httpx`, `masscan`, `subfinder`, `wpscan` and `ffuf` are valid step tools. Anything else is rejected at load time. Every allowlisted tool reports findings; none exploit.
 - No shells: each step is an argv array executed with `shell: false`. There is no command string to inject into.
 - One placeholder: `{{target}}` is the only allowed placeholder; any other `{{...}}` fails validation.
 - Scope re-checked per step: immediately before each step runs, the target is matched with the same scope matcher used everywhere else. An out-of-scope target throws and nothing executes.
@@ -35,7 +35,7 @@ None of the argv comes from the model at runtime. The only substitution is `{{ta
 - Per-step confirmation: every step prints its exact argv and asks `y/N` before running. `--yes` skips the prompt and is required in non-interactive runs.
 - Timeout and output cap: each step has a timeout (per-step `timeoutMs`, default `120000` ms) and captures at most 10 MB across stdout and stderr; excess output is dropped.
 
-The allowlist constrains the tool *name*. `spawn` still resolves it from `PATH`, so the binary that actually runs is whatever `nmap`, `nuclei` or `httpx` resolves to on your machine.
+The allowlist constrains the tool *name*. `spawn` still resolves it from `PATH`, so the binary that actually runs is whatever `nmap`, `nuclei`, `httpx`, `masscan`, `subfinder`, `wpscan` or `ffuf` resolves to on your machine.
 
 ## Listing skills
 
@@ -79,6 +79,12 @@ Target kind is detected from the string: a value with a `scheme://` is `url`, a 
 | `exposed-panels` | passive | `url`, `host` | `nuclei -jsonl -silent -tags panel,login -u {{target}}` | `nuclei-jsonl` |
 | `takeover-check` | passive | `url`, `host` | `nuclei -jsonl -silent -tags takeover -u {{target}}` | `nuclei-jsonl` |
 | `service-discovery` | active | `host`, `ip` | `nmap -sV --top-ports 1000 -T3 -oG - {{target}}` | `nmap-grepable` |
+| `port-sweep` | active | `host`, `ip` | `masscan -p <common TCP ports> --rate 1000 -oJ - {{target}}` | `masscan-json` |
+| `subdomain-discovery` | passive | `host` | `subfinder -oJ -silent -duc -d {{target}}` | `subfinder-jsonl` |
+| `content-discovery` | active | `url` | `ffuf -json -s -maxtime 300 -mc … -w <wordlist> -u {{target}}/FUZZ` | `ffuf-json` |
+| `wpscan` | active | `url`, `host` | `wpscan --url {{target}} --enumerate vp,vt,u --format json --no-banner` | `wpscan-json` |
+
+`wpscan`'s vulnerability (CVE) data needs a WPScan API token. Because skill argv is written to the ledger, the token is read from the `WPSCAN_API_TOKEN` environment variable of the process running `vapt scan`, never from argv. Without a token, wpscan still enumerates version, plugins, themes and users but returns no CVE data. `content-discovery`'s wordlist path is environment-specific (default assumes a Kali-style path) — adjust it for your box; a missing wordlist makes ffuf exit with zero findings, not a crash.
 
 When to use each: `web-fingerprint` maps what a host runs (tech, title, server) before deeper work; `cve-scan` is the active known-CVE pass once a scope is confirmed (it runs for many minutes — note the long `timeoutMs`); `exposed-panels` surfaces admin/login interfaces that should not be public; `takeover-check` catches dangling DNS records pointing at unclaimed services.
 

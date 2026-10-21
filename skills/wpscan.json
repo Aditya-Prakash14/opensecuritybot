@@ -1,0 +1,10 @@
+{
+  "name": "wpscan",
+  "description": "WordPress enumeration and vulnerability triage: version, vulnerable plugins/themes, users, interesting findings. Vulnerability data requires a WPScan API token supplied out-of-band via the WPSCAN_API_TOKEN environment variable (never in argv); without it, enumeration still runs but no CVE data is returned.",
+  "appliesTo": ["url", "host"],
+  "risk": "active",
+  "steps": [
+    { "tool": "wpscan", "args": ["--url", "{{target}}", "--enumerate", "vp,vt,u", "--format", "json", "--no-banner"], "timeoutMs": 900000 }
+  ],
+  "parsers": ["wpscan-json"]
+}

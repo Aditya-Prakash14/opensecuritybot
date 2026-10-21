@@ -1,0 +1,10 @@
+{
+  "name": "subdomain-discovery",
+  "description": "Passive subdomain enumeration with subfinder (no DNS resolution of the target, OSINT sources only).",
+  "appliesTo": ["host"],
+  "risk": "passive",
+  "steps": [
+    { "tool": "subfinder", "args": ["-oJ", "-silent", "-duc", "-d", "{{target}}"], "timeoutMs": 300000 }
+  ],
+  "parsers": ["subfinder-jsonl"]
+}

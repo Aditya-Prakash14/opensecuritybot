@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 import { NORMALIZERS } from "./normalizers.js";
 
-export const TOOL_ALLOWLIST = ["nmap", "nuclei", "httpx"] as const;
+export const TOOL_ALLOWLIST = ["nmap", "nuclei", "httpx", "masscan", "subfinder", "wpscan", "ffuf"] as const;
 
 export type TargetKind = "url" | "host" | "ip";
 

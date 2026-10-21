@@ -37,10 +37,14 @@ test("skills: real skills/ dir loads every skill, sorted by file name", () => {
   assert.deepEqual(skills.map((s) => s.name), [
     "cve-scan",
     "exposed-panels",
+    "content-discovery",
     "http-baseline",
+    "port-sweep",
     "service-discovery",
+    "subdomain-discovery",
     "takeover-check",
     "web-fingerprint",
+    "wpscan",
   ]);
   for (const skill of skills) {
     assert.equal(skill.steps.length, skill.parsers.length);
@@ -55,6 +59,9 @@ test("skills: new reviewed skills load, validate and render argv with the target
     "exposed-panels": { risk: "passive", parsers: ["nuclei-jsonl"], tools: ["nuclei"], renders: "https://app.example.com" },
     "takeover-check": { risk: "passive", parsers: ["nuclei-jsonl"], tools: ["nuclei"], renders: "https://app.example.com" },
     "web-fingerprint": { risk: "passive", parsers: ["httpx-jsonl", "nuclei-jsonl"], tools: ["httpx", "nuclei"], renders: "https://app.example.com" },
+    "port-sweep": { risk: "active", parsers: ["masscan-json"], tools: ["masscan"], renders: "10.10.0.5" },
+    "subdomain-discovery": { risk: "passive", parsers: ["subfinder-jsonl"], tools: ["subfinder"], renders: "app.example.com" },
+    "wpscan": { risk: "active", parsers: ["wpscan-json"], tools: ["wpscan"], renders: "https://app.example.com" },
   };
   for (const [name, want] of Object.entries(expected)) {
     const skill = getSkill(name, "skills");
@@ -226,6 +233,87 @@ test("normalizers: output shape is understood by loadFindings", () => {
   assert.equal(findings[0]!.target, "https://a.example.com");
   assert.equal(findings[0]!.severity, "high");
   assert.equal(findings[0]!.tool, "nuclei");
+});
+
+test("normalizers: masscan-json maps open ports and tolerates the finished record", () => {
+  const output = [
+    "[",
+    '{ "ip": "10.0.0.5", "timestamp": "1700000000", "ports": [ {"port": 22, "proto": "tcp", "status": "open", "reason": "syn-ack", "ttl": 54} ] }',
+    ",",
+    '{ "ip": "10.0.0.5", "timestamp": "1700000001", "ports": [ {"port": 443, "proto": "tcp", "status": "open", "reason": "syn-ack", "ttl": 54} ] }',
+    ",",
+    '{"finished": 1}',
+    "]",
+  ].join("\n");
+  const recs = normalizeOutput("masscan-json", output, "fallback");
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0]!.target, "10.0.0.5:22");
+  assert.equal(recs[0]!.title, "tcp 22 open");
+  assert.equal(recs[0]!.severity, "info");
+  assert.equal(recs[0]!.tool, "masscan");
+  assert.equal(recs[0]!.port, 22);
+  assert.equal((recs[0]!.raw as Record<string, unknown>).reason, "syn-ack");
+  assert.equal(recs[1]!.target, "10.0.0.5:443");
+  assert.deepEqual(normalizeOutput("masscan-json", "", "fallback"), []);
+});
+
+test("normalizers: subfinder-jsonl maps one finding per discovered subdomain", () => {
+  const output = [
+    JSON.stringify({ host: "www.hackerone.com", input: "hackerone.com", source: "crtsh" }),
+    JSON.stringify({ host: "api.hackerone.com", input: "hackerone.com", source: "dnsdumpster" }),
+    "not-json",
+    JSON.stringify({ input: "hackerone.com", source: "bufferover" }),
+  ].join("\n");
+  const recs = normalizeOutput("subfinder-jsonl", output, "hackerone.com");
+  assert.equal(recs.length, 3);
+  assert.equal(recs[0]!.target, "www.hackerone.com");
+  assert.equal(recs[0]!.title, "Subdomain: www.hackerone.com");
+  assert.equal(recs[0]!.tool, "subfinder");
+  assert.equal(recs[2]!.target, "hackerone.com"); // no host -> fallback
+  assert.deepEqual(normalizeOutput("subfinder-jsonl", "", "hackerone.com"), []);
+});
+
+test("normalizers: wpscan-json maps version, plugins, themes, users and interesting findings", () => {
+  const output = JSON.stringify({
+    target_url: "https://blog.example.com/",
+    interesting_findings: [{ to_s: "Headers (X-Powered-By: PHP)", type: "headers" }],
+    version: { number: "5.8.1", status: "insecure", vulnerabilities: [{ title: "WP 5.8.1 XSS" }] },
+    main_theme: { slug: "twentytwentyone", version: { number: "1.3" }, outdated: true, vulnerabilities: [] },
+    plugins: {
+      "contact-form-7": { version: { number: "5.4" }, outdated: false, vulnerabilities: [{ title: "CF7 upload" }, { title: "CF7 XSS" }] },
+      akismet: { version: { number: "4.1.9" }, outdated: true, vulnerabilities: [] },
+    },
+    users: { admin: { id: 1 } },
+  });
+  const recs = normalizeOutput("wpscan-json", output, "fallback");
+  const byTitle = (t: string) => recs.find((r) => String(r.title).startsWith(t));
+  for (const r of recs) assert.equal(r.target, "https://blog.example.com/");
+  assert.equal(byTitle("Headers")!.severity, "info");
+  assert.equal(byTitle("WordPress 5.8.1")!.severity, "high");
+  assert.equal(byTitle("plugin contact-form-7")!.severity, "high");
+  assert.ok(String(byTitle("plugin contact-form-7")!.title).includes("2 known vulnerabilities"));
+  assert.equal(byTitle("plugin akismet")!.severity, "medium");
+  assert.equal(byTitle("theme twentytwentyone")!.severity, "medium");
+  assert.equal(byTitle("user admin")!.severity, "info");
+  assert.deepEqual(normalizeOutput("wpscan-json", "not json", "fallback"), []);
+  assert.deepEqual(normalizeOutput("wpscan-json", "[1,2]", "fallback"), []);
+});
+
+test("normalizers: ffuf-json maps discovered paths and skips non-result lines", () => {
+  const output = [
+    JSON.stringify({ input: { FUZZ: "YWRtaW4=" }, status: 200, length: 1256, url: "https://app.example.com/admin", host: "app.example.com" }),
+    JSON.stringify({ input: { FUZZ: "cm9ib3RzLnR4dA==" }, status: 301, redirectlocation: "/robots/", url: "https://app.example.com/robots.txt", host: "app.example.com" }),
+    "not-json",
+    JSON.stringify({ position: 3, status: 200 }),
+  ].join("\n");
+  const recs = normalizeOutput("ffuf-json", output, "fallback");
+  assert.equal(recs.length, 2);
+  assert.equal(recs[0]!.target, "https://app.example.com/admin");
+  assert.equal(recs[0]!.title, "Discovered path: https://app.example.com/admin (200)");
+  assert.equal(recs[0]!.tool, "ffuf");
+  assert.equal(recs[0]!.status_code, 200);
+  assert.equal(recs[1]!.status_code, 301);
+  assert.deepEqual(normalizeOutput("ffuf-json", "", "fallback"), []);
 });
 
 test("normalizers: unknown name throws", () => {

@@ -1,0 +1,10 @@
+{
+  "name": "port-sweep",
+  "description": "Fast TCP port sweep across common service ports (discovery only, no banners).",
+  "appliesTo": ["host", "ip"],
+  "risk": "active",
+  "steps": [
+    { "tool": "masscan", "args": ["-p", "21,22,23,25,53,80,110,135,139,143,443,445,993,995,1723,3306,3389,5900,8080,8443", "--rate", "1000", "-oJ", "-", "{{target}}"], "timeoutMs": 120000 }
+  ],
+  "parsers": ["masscan-json"]
+}

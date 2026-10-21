@@ -17,6 +17,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Four reviewed scan skills, all finding-producing (no exploitation), each with a normalizer and
+  added to the tool allowlist: `port-sweep` (masscan TCP port discovery, `masscan-json`),
+  `subdomain-discovery` (subfinder passive subdomain enumeration, `subfinder-jsonl`),
+  `content-discovery` (ffuf `-json` web content discovery, `ffuf-json`), and `wpscan` (WordPress
+  version/plugin/theme/user enumeration, `wpscan-json`; WPScan API token read from
+  `WPSCAN_API_TOKEN`, never argv).
 - Secret redaction before any data reaches the LLM (`redactSecrets` in `src/agent-prompt.ts`).
 - `scope.json` `exclude` list (exclusions win everywhere) and `notBefore`/`notAfter` testing
   window, enforced by `vapt scan`.

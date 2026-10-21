@@ -168,8 +168,9 @@ vapt report -f findings/http-baseline-*.json -s scope.json --html
 
 Safety model (`src/runner.ts`, `src/skills.ts`):
 
-- Only `nmap`, `nuclei` and `httpx` may appear in a skill; every step is an argv array run
-  with `shell: false` — there is no command string to inject into.
+- Only `nmap`, `nuclei`, `httpx`, `masscan`, `subfinder`, `wpscan` and `ffuf` may appear in a
+  skill; every step is an argv array run with `shell: false` — there is no command string to
+  inject into. All of them report findings; none exploit.
 - `{{target}}` is the only placeholder. It is filled from the target you pass, which is
   re-checked with `isInScope()` immediately before each step. Cloud metadata endpoints
   (`169.254.169.254`, `fd00:ec2::254`, `metadata.google.internal`) and all link-local
@@ -194,6 +195,10 @@ Bundled skills (run `vapt skills` for the live list):
 - `exposed-panels` (passive) — `nuclei -tags panel,login`; surface admin/login interfaces that should not be public.
 - `takeover-check` (passive) — `nuclei -tags takeover`; catch dangling DNS records pointing at unclaimed services.
 - `service-discovery` (active) — `nmap -sV --top-ports 1000`; TCP service and version discovery.
+- `port-sweep` (active) — `masscan` across common TCP ports; fast port discovery, no banners.
+- `subdomain-discovery` (passive) — `subfinder`; OSINT subdomain enumeration (host targets).
+- `content-discovery` (active) — `ffuf -json` fuzzes a wordlist against `{{target}}/FUZZ`; reports discovered paths (wordlist path is environment-specific).
+- `wpscan` (active) — `wpscan --enumerate vp,vt,u`; WordPress version, vulnerable plugins/themes and users. CVE data needs a WPScan API token, read from the `WPSCAN_API_TOKEN` environment variable so it never appears in argv or the ledger; without it, enumeration still runs but returns no CVE data.
 
 Adding your own skill is a code change, not configuration: drop a JSON file in `skills/`
 (see the two built-ins for the schema), re-read it, and have someone review the argv. A
