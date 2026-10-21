@@ -7,7 +7,7 @@
 ![version](https://img.shields.io/badge/version-0.5.2-blue)
 [![npm](https://img.shields.io/npm/v/opensecuritybot.svg)](https://www.npmjs.com/package/opensecuritybot)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-98%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -408,12 +408,12 @@ rendered from the repo root so they cannot drift. GitHub Pages deploys on every 
 ## Tests
 
 ```sh
-npm test        # 84 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
+npm test        # 98 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
                 # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
                 # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
                 # Anthropic messages, workspace, scan skills, normalizers, runner, ledger,
                 # redaction, control chars, scope exclusions/window, ledger hash chain,
-                # triage cache, KEV
+                # triage cache, KEV, triage clustering
 ```
 
 ## Design notes and limitations

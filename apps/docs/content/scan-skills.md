@@ -97,6 +97,10 @@ Scanner output is normalized into the same findings format the rest of the pipel
 - httpx JSONL → one `info` record per URL (status, title, tech, webserver).
 - nuclei JSONL → one record per matched template (template id, target, title, severity, description).
 - nmap grepable → one `info` record per open port (`host:port`, service, version).
+- masscan JSON → one `info` record per open TCP port (`ip:port`, `tcp <port> open`).
+- subfinder JSONL → one `info` record per discovered subdomain.
+- ffuf JSON → one `info` record per discovered path (url, status).
+- wpscan JSON → version, vulnerable plugins/themes (mapped to `medium`/`high`), users and interesting findings.
 
 The run writes `<out>/<skill-name>-<timestamp>.json` and prints `saved: <path>` plus a suggested `vapt report` command. If no records were produced, nothing is written and the CLI prints `no findings produced` — that is not an error by itself.
 
