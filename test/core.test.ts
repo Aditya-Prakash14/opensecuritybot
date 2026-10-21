@@ -345,6 +345,48 @@ test("report: triages each finding, then synthesizes; failures are noted", async
   assert.ok(!prompts[3]!.includes("SECRET-EVIDENCE"), "synthesis prompt must not contain raw evidence");
 });
 
+test("report: clusters the same issue across targets — one triage call, note carried into synthesis", async (t) => {
+  process.env.VAPT_LLM_MODEL = "stub";
+  let triageCalls = 0;
+  const { prompts, restore } = stubFetch((p) => {
+    if (p.includes("Compose the full VAPT report")) return "REPORT";
+    triageCalls++;
+    return VALID_TRIAGE;
+  });
+  t.after(restore);
+  const findings = [
+    { id: "F-1", target: "https://a.example.com", title: "Missing HSTS", severity: "low" },
+    { id: "F-2", target: "https://b.example.com", title: "Missing HSTS", severity: "low" },
+    { id: "F-3", target: "https://c.example.com", title: "Open redirect", severity: "medium" },
+  ] as Finding[];
+  const out = await buildReport(findings, { scope: { targets: ["*.example.com"] }, cache: new Map() });
+  assert.equal(triageCalls, 2, "two distinct issues → two triage calls, not three");
+  assert.equal(out.failures.length, 0);
+  const synth = prompts.find((p) => p.includes("Compose the full VAPT report"))!;
+  assert.match(synth, /\[cluster\] This issue appears on 2 targets/);
+  // all three findings still appear in the triage-results fed to synthesis
+  for (const id of ["F-1", "F-2", "F-3"]) assert.ok(synth.includes(id), `${id} present`);
+});
+
+test("report: VAPT_CLUSTER=0 triages every finding on its own", async (t) => {
+  process.env.VAPT_LLM_MODEL = "stub";
+  process.env.VAPT_CLUSTER = "0";
+  t.after(() => delete process.env.VAPT_CLUSTER);
+  let triageCalls = 0;
+  const { restore } = stubFetch((p) => {
+    if (p.includes("Compose the full VAPT report")) return "REPORT";
+    triageCalls++;
+    return VALID_TRIAGE;
+  });
+  t.after(restore);
+  const findings = [
+    { id: "F-1", target: "https://a.example.com", title: "Missing HSTS", severity: "low" },
+    { id: "F-2", target: "https://b.example.com", title: "Missing HSTS", severity: "low" },
+  ] as Finding[];
+  await buildReport(findings, { scope: { targets: ["*.example.com"] }, cache: new Map() });
+  assert.equal(triageCalls, 2, "clustering disabled → one call per finding");
+});
+
 test("report: all triage failures throw instead of producing an empty report", async (t) => {
   process.env.VAPT_LLM_MODEL = "stub";
   const { restore } = stubFetch(() => "garbage, not json");

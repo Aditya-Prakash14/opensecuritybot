@@ -1,62 +1,82 @@
 [
   {
     "note": "real exposure: config body returned",
-    "finding": {
-      "id": "E-1",
-      "target": "https://app.example.com/.git/config",
-      "title": "Exposed .git/config",
-      "severity": "high",
-      "tool": "nuclei",
-      "raw": { "status": 200, "body": "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = git@github.com:example/app.git" }
-    },
+    "finding": { "id": "E-1", "target": "https://app.example.com/.git/config", "title": "Exposed .git/config", "severity": "high", "tool": "nuclei", "raw": { "status": 200, "body": "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = git@github.com:example/app.git" } },
     "expected": { "isLikelyTruePositive": true, "severity": "high" }
   },
   {
     "note": "scanner matched a soft-404 page",
-    "finding": {
-      "id": "E-2",
-      "target": "https://app.example.com/backup/",
-      "title": "Directory listing enabled",
-      "severity": "medium",
-      "tool": "nuclei",
-      "raw": { "status": 404, "body": "<html><title>404 Not Found</title><h1>Not Found</h1></html>" }
-    },
+    "finding": { "id": "E-2", "target": "https://app.example.com/backup/", "title": "Directory listing enabled", "severity": "medium", "tool": "nuclei", "raw": { "status": 404, "body": "<html><title>404 Not Found</title><h1>Not Found</h1></html>" } },
     "expected": { "isLikelyTruePositive": false, "severity": "info" }
   },
   {
     "note": "header genuinely absent on an HTTPS app",
-    "finding": {
-      "id": "E-3",
-      "target": "https://app.example.com",
-      "title": "Missing Strict-Transport-Security header",
-      "severity": "low",
-      "tool": "nuclei",
-      "raw": { "status": 200, "headers": { "content-type": "text/html", "server": "nginx" } }
-    },
+    "finding": { "id": "E-3", "target": "https://app.example.com", "title": "Missing Strict-Transport-Security header", "severity": "low", "tool": "nuclei", "raw": { "status": 200, "headers": { "content-type": "text/html", "server": "nginx" } } },
     "expected": { "isLikelyTruePositive": true, "severity": "low" }
   },
   {
     "note": "redirect stays on the same origin",
-    "finding": {
-      "id": "E-4",
-      "target": "https://app.example.com/login?next=/dashboard",
-      "title": "Open redirect",
-      "severity": "medium",
-      "tool": "zap",
-      "raw": { "status": 302, "headers": { "location": "https://app.example.com/dashboard" } }
-    },
+    "finding": { "id": "E-4", "target": "https://app.example.com/login?next=/dashboard", "title": "Open redirect", "severity": "medium", "tool": "zap", "raw": { "status": 302, "headers": { "location": "https://app.example.com/dashboard" } } },
     "expected": { "isLikelyTruePositive": false, "severity": "info" }
   },
   {
     "note": "TLS 1.0 handshake completed",
-    "finding": {
-      "id": "E-5",
-      "target": "app.example.com:443",
-      "title": "TLS 1.0 supported",
-      "severity": "medium",
-      "tool": "nmap",
-      "raw": { "ssl-enum-ciphers": "TLSv1.0: ciphers: TLS_RSA_WITH_AES_128_CBC_SHA - A" }
-    },
+    "finding": { "id": "E-5", "target": "app.example.com:443", "title": "TLS 1.0 supported", "severity": "medium", "tool": "nmap", "raw": { "ssl-enum-ciphers": "TLSv1.0: ciphers: TLS_RSA_WITH_AES_128_CBC_SHA - A" } },
     "expected": { "isLikelyTruePositive": true, "severity": "low" }
+  },
+  {
+    "note": "verbose SQL error leaks the query and stack",
+    "finding": { "id": "E-6", "target": "https://app.example.com/product?id=1'", "title": "Database error message disclosed", "severity": "high", "tool": "zap", "raw": { "status": 500, "body": "You have an error in your SQL syntax near '1'' at line 1 (com.mysql.jdbc...)" } },
+    "expected": { "isLikelyTruePositive": true, "severity": "high" }
+  },
+  {
+    "note": "software version disclosure, low impact on its own",
+    "finding": { "id": "E-7", "target": "https://app.example.com", "title": "X-Powered-By header discloses PHP version", "severity": "medium", "tool": "nuclei", "raw": { "status": 200, "headers": { "x-powered-by": "PHP/8.1.2" } } },
+    "expected": { "isLikelyTruePositive": true, "severity": "low" }
+  },
+  {
+    "note": "self-signed cert on an internal admin panel",
+    "finding": { "id": "E-8", "target": "https://admin.internal.example.com", "title": "Self-signed TLS certificate", "severity": "low", "tool": "nmap", "raw": { "ssl-cert": { "issuer": "CN=admin.internal.example.com", "subject": "CN=admin.internal.example.com", "self_signed": true } } },
+    "expected": { "isLikelyTruePositive": true, "severity": "medium" }
+  },
+  {
+    "note": "technology detection, not a vulnerability",
+    "finding": { "id": "E-9", "target": "https://blog.example.com", "title": "WordPress detected", "severity": "info", "tool": "nuclei", "raw": { "template-id": "wordpress-detect", "matched-at": "https://blog.example.com", "info": { "tags": "tech" } } },
+    "expected": { "isLikelyTruePositive": false, "severity": "info" }
+  },
+  {
+    "note": "CORS reflects any origin with credentials",
+    "finding": { "id": "E-10", "target": "https://api.example.com/account", "title": "CORS misconfiguration: wildcard origin with credentials", "severity": "high", "tool": "nuclei", "raw": { "status": 200, "headers": { "access-control-allow-origin": "https://evil.example.net", "access-control-allow-credentials": "true" } } },
+    "expected": { "isLikelyTruePositive": true, "severity": "high" }
+  },
+  {
+    "note": "clickjacking flag on a static marketing page with no actions",
+    "finding": { "id": "E-11", "target": "https://www.example.com/about", "title": "Missing X-Frame-Options (clickjacking)", "severity": "medium", "tool": "zap", "raw": { "status": 200, "body": "<html><body>About our company</body></html>" } },
+    "expected": { "isLikelyTruePositive": false, "severity": "info" }
+  },
+  {
+    "note": "default Tomcat manager reachable",
+    "finding": { "id": "E-12", "target": "https://app.example.com/manager/html", "title": "Tomcat Manager application accessible", "severity": "high", "tool": "nuclei", "raw": { "status": 401, "headers": { "www-authenticate": "Basic realm=\"Tomcat Manager Application\"" } } },
+    "expected": { "isLikelyTruePositive": true, "severity": "high" }
+  },
+  {
+    "note": "genuine directory listing, but only static images",
+    "finding": { "id": "E-13", "target": "https://www.example.com/images/", "title": "Directory listing enabled", "severity": "medium", "tool": "nuclei", "raw": { "status": 200, "body": "<title>Index of /images</title><a href=\"logo.png\">logo.png</a><a href=\"banner.jpg\">banner.jpg</a>" } },
+    "expected": { "isLikelyTruePositive": true, "severity": "low" }
+  },
+  {
+    "note": "outdated jQuery with a known XSS CVE",
+    "finding": { "id": "E-14", "target": "https://app.example.com/assets/vendor.js", "title": "Outdated jQuery 1.12.4", "severity": "medium", "tool": "nuclei", "cve": ["CVE-2020-11022"], "raw": { "status": 200, "body": "/*! jQuery v1.12.4 */" } },
+    "expected": { "isLikelyTruePositive": true, "severity": "medium" }
+  },
+  {
+    "note": "robots.txt contents are informational only",
+    "finding": { "id": "E-15", "target": "https://app.example.com/robots.txt", "title": "robots.txt lists disallowed paths", "severity": "low", "tool": "nuclei", "raw": { "status": 200, "body": "User-agent: *\nDisallow: /admin/\nDisallow: /tmp/" } },
+    "expected": { "isLikelyTruePositive": false, "severity": "info" }
+  },
+  {
+    "note": "exposed .env with live database credentials",
+    "finding": { "id": "E-16", "target": "https://app.example.com/.env", "title": "Exposed .env file with credentials", "severity": "high", "tool": "nuclei", "raw": { "status": 200, "body": "APP_ENV=production\nDB_HOST=db.example.com\nDB_USER=app\nDB_PASSWORD=REDACTED" } },
+    "expected": { "isLikelyTruePositive": true, "severity": "critical" }
   }
 ]

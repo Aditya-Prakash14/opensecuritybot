@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
 import { findCveIds } from "./cve-cache.js";
+import { issueKey } from "./findings.js";
 import { type ChatMessage, chat, estimateMessageTokens, llmIdentity } from "./llm.js";
 import { type TriageCtx, triageFindingJson } from "./triage.js";
 import type { CveEntry, Finding, TriageResult } from "./types.js";
@@ -121,6 +122,9 @@ export function saveReportHtml(html: string, outDir: string): string {
 }
 
 /** Up to TRIAGE_CONCURRENCY calls in flight; results keep input (severity) order. */
+const withNote = (r: TriageResult, note: string): TriageResult =>
+  note ? { ...r, triage: { ...r.triage, reasoning: `${r.triage.reasoning}${note}` } } : r;
+
 async function triageAll(
   findings: Finding[],
   ctx: TriageCtx,
@@ -130,23 +134,45 @@ async function triageAll(
   const results: (TriageResult | null)[] = new Array(findings.length).fill(null);
   const failures: string[] = [];
   const memo = triageMemo(ctx.resultsPath, model);
+
+  // Cluster the same issue seen on different targets: triage one representative, apply across the group.
+  // VAPT_CLUSTER=0 triages every finding on its own.
+  const cluster = process.env.VAPT_CLUSTER !== "0";
+  const groups = new Map<string, number[]>();
+  findings.forEach((f, i) => {
+    const key = cluster ? `${issueKey(f)}::${String(f.severity ?? "").toLowerCase()}` : String(i);
+    (groups.get(key) ?? groups.set(key, []).get(key)!).push(i);
+  });
+  const clusters = [...groups.values()];
+  if (cluster && clusters.length < findings.length) {
+    log?.(`clustered ${findings.length} finding(s) into ${clusters.length} issue(s) for triage`);
+  }
+
   let next = 0;
   let completed = 0;
   const worker = async () => {
-    while (next < findings.length) {
-      const i = next++;
-      const f = findings[i]!;
+    while (next < clusters.length) {
+      const group = clusters[next++]!;
+      const rep = findings[group[0]!]!;
       try {
-        results[i] = await memo.triage(f, ctx);
+        const base = await memo.triage(rep, ctx);
+        const note =
+          group.length > 1
+            ? `\n\n[cluster] This issue appears on ${group.length} targets; triaged once and applied across all ${group.length}.`
+            : "";
+        for (const idx of group) {
+          const f = findings[idx]!;
+          results[idx] = withNote(idx === group[0] ? base : { ...base, findingId: f.id }, note);
+        }
       } catch (e) {
-        failures.push(`${f.id}: ${(e as Error).message}`);
+        for (const idx of group) failures.push(`${findings[idx]!.id}: ${(e as Error).message}`);
       } finally {
         completed++;
-        log?.(`triaged ${progressBar(completed, findings.length)} ${f.id} (${f.severity ?? "?"})`);
+        log?.(`triaged ${progressBar(completed, clusters.length)} ${rep.id} (${rep.severity ?? "?"})`);
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(TRIAGE_CONCURRENCY, findings.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(TRIAGE_CONCURRENCY, clusters.length) }, worker));
   memo.save(log);
   return { results: results.filter((r): r is TriageResult => r !== null), failures };
 }

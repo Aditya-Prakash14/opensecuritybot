@@ -91,12 +91,17 @@ function normalizeFinding(input: unknown): { finding: Finding; autoId: boolean }
   return { finding, autoId: picked === undefined };
 }
 
+/** The issue a finding represents, ignoring which target it was seen on: CVE, else title/template. */
+export function issueKey(f: Finding): string {
+  const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
+  const titleKey = String(f.title || f.template_id || f.id || "").toLowerCase().trim();
+  return cveKey ?? titleKey;
+}
+
 /** Identity for dedup and baseline/current matching: target + CVE, else target + title. */
 export function findingSignature(f: Finding): string {
   const normTarget = (f.target || "").toLowerCase().replace(/\/+$/, "");
-  const cveKey = Array.isArray(f.cve) && f.cve.length > 0 ? String(f.cve[0]).toUpperCase() : null;
-  const titleKey = String(f.title || f.template_id || f.id || "").toLowerCase().trim();
-  return `${normTarget}::${cveKey ?? titleKey}`;
+  return `${normTarget}::${issueKey(f)}`;
 }
 
 /** critical=4 … info=0, unknown=-1. One ordering for sort, dedup and drift. */

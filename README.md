@@ -349,9 +349,15 @@ cannot drive your terminal.
   model and prompt. Re-runs reuse it instead of paying for the call again. To override the
   model, edit an entry (e.g. set `isLikelyTruePositive` to `false`); the edit stands until the
   finding, the model or the prompt changes. Delete the file to re-triage everything.
-- `npm run eval [-- labeled.json]` triages a labeled set with your configured model and prints
-  verdict and severity agreement. `examples/eval/labeled.json` is a five-item seed; replace
-  it with findings your team has labeled.
+- `npm run eval [-- <labeled.json> [<report.md>]]` triages a labeled set with your configured
+  model and scores it: verdict agreement, a true/false-positive confusion matrix (the
+  **missed real** count — a true finding called a false positive — is the error that matters
+  and makes the run exit non-zero), and severity exact / within ±1. It prints to the terminal
+  and writes a markdown report (default `eval-report.md`). `examples/eval/labeled.json` is a
+  small **illustrative** seed, not measured ground truth — replace it with findings your team
+  has labelled from real engagements before trusting any number. Accuracy is a property of the
+  model and the labels, so no figure is published here until it comes from a real set and a
+  real run.
 
 ## Documentation site
 
