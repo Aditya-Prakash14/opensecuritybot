@@ -37,6 +37,7 @@ export const SITE = {
 export const DOCS = [
   { slug: "getting-started", title: "Getting started", section: "Start", description: "Install, configure and run your first engagement." },
   { slug: "scan-skills", title: "Scan skills", section: "Guides", description: "Run reviewed, scope-pinned scanner playbooks." },
+  { slug: "code-audit", title: "Code audit", section: "Guides", description: "Audit source code with reviewed attack-class knowledge." },
   { slug: "verification", title: "Verification", section: "Guides", description: "How triage output is checked before you trust it." },
   { slug: "reports", title: "Reports", section: "Guides", description: "From findings to a client-ready VAPT report." },
   { slug: "cli-reference", title: "CLI reference", section: "Reference", description: "Every command, flag and environment variable." },

@@ -7,7 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- `vapt audit <path>` (`src/audit.ts`) — source-code audit as a third finding source next to
+  scanner output and scan skills. It reads local source, applies reviewed attack-class
+  knowledge, and writes *candidate* findings in the same normalized shape, so triage (the
+  adversarial verifier), CVE cross-checking, reports and diffs are unchanged. Nothing is
+  executed and no target is contacted; only the configured LLM endpoint sees the source.
+  Coverage (`filesScanned`, `filesSkipped`, packs, calls) is recorded in the findings file and
+  one line is appended to the execution ledger for the report's methodology section. Source
+  files are wrapped in escaped data tags and declared as data, never instructions.
+- `skills/audit/` — attack-class knowledge packs vendored (MIT) from Cloudflare's
+  [security-audit skill](https://github.com/cloudflare/security-audit-skill), plus
+  `audit-mode`, `validation-rules` and `NOTICE.txt` recording exactly what was vendored and
+  what was deliberately left out. `VAPT_AUDIT_DIR` overrides the directory.
+- `vapt skills` now lists the audit knowledge packs after the scan skills.
+- Path targets in `scope.json` (`src/scope-guard.ts`): local paths such as `/home/me/repo`,
+  `~/repo` or `./src` are matched as paths — the exact directory or anything below it, with
+  relative entries matching the tail of the audited absolute path — and never as hosts.
 
 ## [0.5.2] - 2026-10-17
 

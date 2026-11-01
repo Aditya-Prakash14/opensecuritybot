@@ -1,20 +1,21 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { Command } from "commander";
+import { auditRepo, loadKnowledgePacks } from "./audit.js";
 import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
 import { deduplicateFindings, loadFindings } from "./findings.js";
 import { loadLedger, summarizeLedger } from "./ledger.js";
 import { TRIAGE_CONCURRENCY, buildReport, renderReportHtml, saveReport, saveReportHtml } from "./report.js";
 import { runSkill } from "./runner.js";
-import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
+import { filterInScope, isInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { startSession } from "./session.js";
 import { ensureConfigured, runSetup } from "./setup.js";
 import { getSkill, loadSkills, skillApplies } from "./skills.js";
 import { type TriageCtx, sortBySeverity, triageFindingJson, triageFindingMarkdownStream } from "./triage.js";
 import { VERSION } from "./version.js";
-import { bold, coral, cyan, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, yellow } from "./ui.js";
+import { bold, coral, cyan, dim, findingHeader, green, red, severityColor, spinner, streamMarkdown, truncate, yellow } from "./ui.js";
 import { compareFindings, printDiffSummary, renderDiffHtml, renderDiffMarkdown } from "./diff.js";
 import {
   createWorkspace,
@@ -86,6 +87,7 @@ Examples:
   $ vapt triage -f findings.json --json       machine-readable triage
   $ vapt report -f findings.json --html       full report (markdown + HTML)
   $ vapt diff -b before.json -c after.json    remediation delta
+  $ vapt audit ./src                          source-code audit, no scanner needed
 
 Engagement files: scope.json · findings.json · cve-cache/ · report/
 Docs and limitations: README.md`,
@@ -237,22 +239,33 @@ program
 
 program
   .command("skills")
-  .description("list the reviewed scan skills available to `vapt scan`")
+  .description("list the reviewed scan skills and the audit knowledge packs")
   .option("--dir <dir>", "skills directory (default: VAPT_SKILLS_DIR or ./skills)")
   .action((opts: { dir?: string }) => {
     const skills = loadSkills(opts.dir);
     if (skills.length === 0) {
-      console.log(dim("no skills found"));
-      return;
+      console.log(dim("no scan skills found"));
+    } else {
+      console.log(bold("\nScan skills"));
+      console.log(dim("─".repeat(50)));
+      for (const s of skills) {
+        const risk = s.risk === "active" ? red("active") : green("passive");
+        console.log(` ${bold(s.name)}  ${risk} ${dim(`· ${s.appliesTo.join("/")} · ${s.steps.map((st) => st.tool).join(" + ")}`)}`);
+        console.log(`   ${dim(s.description)}`);
+      }
+      console.log(dim("\nrun: vapt scan --skill <name> --target <scope entry>"));
     }
-    console.log(bold("\nScan skills"));
-    console.log(dim("─".repeat(50)));
-    for (const s of skills) {
-      const risk = s.risk === "active" ? red("active") : green("passive");
-      console.log(` ${bold(s.name)}  ${risk} ${dim(`· ${s.appliesTo.join("/")} · ${s.steps.map((st) => st.tool).join(" + ")}`)}`);
-      console.log(`   ${dim(s.description)}`);
+
+    const packs = loadKnowledgePacks();
+    if (packs.length > 0) {
+      console.log(bold("\nAudit knowledge packs"));
+      console.log(dim("─".repeat(50)));
+      for (const p of packs) {
+        console.log(` ${bold(p.name)}  ${dim(`· ${truncate(p.description, 72)}`)}`);
+      }
+      console.log(dim("\nrun: vapt audit <path> [--knowledge <name,...|all>]"));
     }
-    console.log(dim("\nrun: vapt scan --skill <name> --target <scope entry>\n"));
+    console.log("");
   });
 
 program
@@ -324,6 +337,56 @@ program
       } finally {
         rl?.close();
       }
+    },
+  );
+
+program
+  .command("audit <path>")
+  .description("audit local source code for vulnerabilities (no scanner needed) and write candidate findings")
+  .option("-t, --target <target>", "target string written to each finding (default: the resolved path)")
+  .option("-k, --knowledge <names>", 'knowledge packs: comma-separated names or "all" (default: auto-selected for the source)')
+  .option("-o, --out <dir>", "findings output directory", "./findings")
+  .option("--ledger <path>", "append-only execution ledger", "./report/scan-ledger.jsonl")
+  .option("--max-bytes <chars>", "total source budget for one run", "400000")
+  .option("--chunk-bytes <chars>", "source budget per LLM call", "120000")
+  .option("-q, --quiet", "suppress progress messages on stderr")
+  .action(
+    async (
+      path: string,
+      opts: { target?: string; knowledge?: string; out: string; ledger: string; maxBytes: string; chunkBytes: string; quiet?: boolean },
+    ) => {
+      await ensureConfigured();
+      const target = opts.target?.trim() || resolve(path);
+      const log = (m: string) => {
+        if (!opts.quiet) console.error(dim(m));
+      };
+      const result = await auditRepo({
+        root: path,
+        target,
+        outDir: opts.out,
+        ledgerPath: opts.ledger,
+        knowledge: opts.knowledge?.split(",").map((s) => s.trim()).filter(Boolean),
+        maxBytes: Number(opts.maxBytes),
+        chunkBytes: Number(opts.chunkBytes),
+        log,
+      });
+      if (!opts.quiet) {
+        console.error(dim(`coverage: ${result.filesScanned} file(s) audited, ${result.filesSkipped.length} skipped (recorded in the findings file)`));
+        console.error(yellow(`note: source was sent to your configured LLM endpoint (see src/audit.ts)`));
+      }
+      console.error(green(`saved: ${result.findingsPath} — ${result.findings.length} candidate(s), unverified`));
+      if (result.findings.length === 0) return;
+
+      // Findings are only processed after this target is in scope.json; say so before triage fails.
+      let inScope = false;
+      try {
+        inScope = isInScope(target, scopeEntries(loadScope(resolveWorkspacePath("./scope.json"))));
+      } catch {
+        /* no readable scope.json yet — the hint below covers it */
+      }
+      if (!inScope) console.error(yellow(`add "${target}" to scope.json targets — out-of-scope findings never reach the model`));
+      console.error(dim(`next: vapt triage -f ${result.findingsPath} -s ./scope.json`));
+      console.error(dim(`      borderline candidates are the point: vapt triage --json verifies each one`));
     },
   );
 

@@ -7,7 +7,7 @@
 ![version](https://img.shields.io/badge/version-0.5.2-blue)
 [![npm](https://img.shields.io/npm/v/opensecuritybot.svg)](https://www.npmjs.com/package/opensecuritybot)
 ![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)
-![tests](https://img.shields.io/badge/tests-74%20passing-brightgreen)
+![tests](https://img.shields.io/badge/tests-85%20passing-brightgreen)
 ![deps](https://img.shields.io/badge/TUI%20dependencies-none-success)
 
 </div>
@@ -46,6 +46,7 @@ flowchart LR
 - 📄 **Reports that ship** — executive summary through prioritized remediation roadmap, sections 1–5.
 - 💬 **Two ways to work** — a Claude-Code-style interactive session, or one-shot commands with `--json` for pipelines.
 - 🔒 **Reviewed scan skills** — scope-pinned, allowlisted playbooks (`nmap`, `nuclei`, `httpx`) whose exact argv you confirm; each run is written to an execution ledger that lands in the report's methodology section.
+- 🔍 **Code audit, no scanner needed** — `vapt audit ./src` reviews local source with the reviewed attack-class knowledge from Cloudflare's [security-audit skill](https://github.com/cloudflare/security-audit-skill) and emits candidates the same pipeline triages and reports.
 - 🔌 **Any provider** — OpenRouter, Groq, OpenAI, Meta, Anthropic, Ollama… guided by a first-run wizard.
 
 ## Requirements
@@ -141,8 +142,9 @@ only when a finding references that CVE, so a full NVD-sized cache stays cheap.
 | `vapt triage -f <findings> [-s <scope>] [-c <cache>] [--id <id>] [--json] [-q]` | triage findings |
 | `vapt report -f <findings> [-s <scope>] [-c <cache>] [-o <dir>] [--html] [--json] [-q]` | compile full VAPT report (Markdown + HTML) |
 | `vapt diff -b <baseline> -c <current> [-s <scope>] [-o <file>] [--html] [--json] [-q]` | compare baseline vs re-test findings (remediation delta verification) |
-| `vapt skills [--dir <dir>]` | list the reviewed scan skills |
+| `vapt skills [--dir <dir>]` | list the reviewed scan skills and the audit knowledge packs |
 | `vapt scan --skill <name> --target <scope entry> [-s <scope>] [-o <dir>] [--ledger <path>] [--dry-run] [--yes] [-q]` | run a scope-pinned scan skill and write normalized findings |
+| `vapt audit <path> [-t <target>] [-k <packs>] [-o <dir>] [--ledger <path>] [--max-bytes <n>] [--chunk-bytes <n>] [-q]` | audit local source code against the reviewed attack classes and write candidate findings |
 
 ## Scan skills
 
@@ -177,6 +179,35 @@ and reporting work unchanged.
 Adding your own skill is a code change, not configuration: drop a JSON file in `skills/`
 (see the two built-ins for the schema), re-read it, and have someone review the argv. A
 skill that cannot be reviewed should not be run.
+
+## Code audit
+
+Not every finding needs a scanner. `vapt audit` reads local source, applies reviewed
+attack-class knowledge, and writes *candidate* findings in the same normalized shape — so
+triage (the adversarial verifier), CVE cross-checking, reports and diffs work unchanged.
+Nothing is executed and no target is contacted; the only call out is to your configured LLM.
+
+```sh
+vapt audit ./src                                        # audit a directory
+vapt audit . --knowledge attack-classes,ai-and-llm      # pick your own packs
+vapt skills                                             # list packs
+```
+
+The knowledge (`skills/audit/*.md`) is vendored from Cloudflare's
+[security-audit skill](https://github.com/cloudflare/security-audit-skill) (MIT) — attack
+classes for injection, access control, web/auth, client-side, AI/LLM, cloud, supply chain,
+RPC, isolation, resource exhaustion, mobile/local IPC and memory safety — plus the candidate
+gate its own design says to include in every hunting prompt. `audit-mode`,
+`validation-rules` and `attack-classes` are always sent; up to three companion packs are
+added when the source matches their vocabulary. See `skills/audit/NOTICE.txt` for exactly
+what was vendored and what was deliberately left out, and
+[docs/code-audit](https://opensecuritybot.vercel.app/docs/code-audit/) for the full guide.
+
+An audit needs no scope file to run (it touches no target), but its findings only reach the
+model once the audited path is a target in `scope.json` — path targets match the exact
+directory or anything below it, and the command prints the string to add. Each run records
+what it covered (`filesScanned`, `filesSkipped`) in the findings file and one line in
+`report/scan-ledger.jsonl`, which the report's methodology section shows.
 
 ## Interactive session
 
@@ -332,6 +363,8 @@ rendered from the repo root so they cannot drift. GitHub Pages deploys on every 
 | `src/workspace.ts` | multi-engagement workspace management and path resolution |
 | `src/cve-cache.ts` | lazy NVD cache index, on-demand NVD 2.0 API fetching |
 | `src/skills.ts` | scan-skill schema, loading and validation (allowlisted tools, `{{target}}` only) |
+| `src/audit.ts` | source collection, knowledge-pack selection, audit calls, candidate → finding mapping |
+| `skills/audit/` | vendored attack-class knowledge packs and their provenance (`NOTICE.txt`) |
 | `src/runner.ts` | argv-only execution: scope re-check, confirmation, timeout, output cap, findings output |
 | `src/normalizers.ts` | httpx JSONL / nuclei JSONL / nmap grepable → normalized findings |
 | `src/ledger.ts` | append-only scan execution ledger, summarized into the report methodology |
@@ -344,10 +377,11 @@ rendered from the repo root so they cannot drift. GitHub Pages deploys on every 
 ## Tests
 
 ```sh
-npm test        # 74 tests: scope (incl. IPv6 CIDR), cache + NVD auto-fetch, verify, findings
-                # parsing/dedup/evidence capping, report + HTML, retry/timeout (incl. stalled
-                # streams), prompt-data escaping, streaming, config, diff (fail-closed scope),
-                # Anthropic messages, workspace, scan skills, normalizers, runner, ledger
+npm test        # 85 tests: scope (incl. IPv6 CIDR, path targets), cache + NVD auto-fetch, verify,
+                # findings parsing/dedup/evidence capping, report + HTML, retry/timeout (incl.
+                # stalled streams), prompt-data escaping, streaming, config, diff (fail-closed
+                # scope), Anthropic messages, workspace, scan skills, normalizers, runner,
+                # ledger, audit (collection, chunking, pack selection, parsing, e2e)
 ```
 
 ## Design notes and limitations

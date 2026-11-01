@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtempSync, statSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fetchNvdCve, findCveIds, loadCveCache, prefetchMissingCves } from "../src/cve-cache.js";
@@ -81,6 +81,21 @@ test("scope: IPv6 CIDR range matching", () => {
   assert.equal(isInScope("::1", ["::1/128"]), true);
   assert.equal(isInScope("::2", ["::1/128"]), false);
   assert.equal(isInScope("fe80::1", ["::/0"]), true);
+});
+
+test("scope: local paths match as paths only, exact dir or below it", () => {
+  assert.equal(isInScope("/home/me/repo", ["/home/me/repo"]), true);
+  assert.equal(isInScope("/home/me/repo", ["/home/me/repo/"]), true);
+  assert.equal(isInScope("/home/me/repo/src/a.ts", ["/home/me/repo"]), true, "a scoped directory covers its files");
+  assert.equal(isInScope("/home/me/repo-other", ["/home/me/repo"]), false, "prefix must be a path segment");
+  assert.equal(isInScope("/home/me/other", ["/home/me/repo"]), false);
+  assert.equal(isInScope(join(homedir(), "repo"), ["~/repo"]), true, "~ expands to the home directory");
+  assert.equal(isInScope("/home/me/repo/src/a.ts", ["./src"]), true, "relative entries match the target tail");
+  assert.equal(isInScope("/home/me/repo/src/a.ts", ["repo/nested"]), false);
+  assert.equal(isInScope("/home/me/repo/src/a.ts", ["other/src"]), false);
+  // A path target can never match a host entry, and vice versa.
+  assert.equal(isInScope("/home/me/repo", ["example.com", "10.10.0.0/24"]), false);
+  assert.equal(isInScope("example.com", ["/home/me/repo"]), false);
 });
 
 test("scope: validates CIDR ranges in targets", () => {

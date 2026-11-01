@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import type { Finding, Scope } from "./types.js";
 
 /** A scope file is mandatory: without a confirmed scope we refuse to process anything. */
@@ -80,7 +81,22 @@ function hostOf(value: string): string {
   return unbracket(stripPort(v.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!)).toLowerCase();
 }
 
+/** Local source paths (e.g. `vapt audit`) are scoped as paths, never as hosts. */
+const isPathLike = (value: string): boolean => /^(~?\/|\.{1,2}\/)/.test(value.trim());
+
 export function isInScope(target: string, entries: string[]): boolean {
+  if (isPathLike(target)) {
+    const path = normalizePath(target);
+    // A path target matches only a path entry: the same path, or a directory that contains it.
+    return entries.some((entry) => {
+      if (!isPathLike(entry)) return false;
+      const scoped = normalizePath(entry);
+      if (scoped.startsWith("/")) return path === scoped || path.startsWith(scoped + "/");
+      // Relative entries (`./src`, `myrepo/src`) match the same tail of an absolute target.
+      return path === scoped || path.endsWith("/" + scoped) || path.includes("/" + scoped + "/");
+    });
+  }
+
   const host = hostOf(target);
   const lowerTarget = target.trim().toLowerCase();
   for (const entry of entries) {
@@ -114,6 +130,16 @@ export function filterInScope(findings: Finding[], entries: string[]): { inScope
   const outOfScope: Finding[] = [];
   for (const f of findings) (isInScope(f.target, entries) ? inScope : outOfScope).push(f);
   return { inScope, outOfScope };
+}
+
+/** `~`, trailing slashes and a leading `./` never change which path a scope entry means. */
+function normalizePath(value: string): string {
+  const v = value
+    .trim()
+    .replace(/^~(?=\/|$)/, homedir())
+    .replace(/\/+$/, "")
+    .replace(/^\.\//, "");
+  return v || "/";
 }
 
 function hostPattern(entry: string): string {

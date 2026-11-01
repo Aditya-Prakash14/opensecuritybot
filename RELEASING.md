@@ -25,7 +25,7 @@ Also update the static version badge near the top of `README.md`
 npm run build && npm test
 ```
 
-Must be green (~72 tests).
+Must be green (~85 tests).
 
 ## 3. Inspect the tarball
 
@@ -33,8 +33,9 @@ Must be green (~72 tests).
 npm pack --dry-run
 ```
 
-Confirm `dist/`, `skills/`, `README.md` and `LICENSE` are in, and nothing stray
-(no `src/`, `test/`, `examples/`) sneaks in.
+Confirm `dist/`, `skills/` (including `skills/audit/` and its `NOTICE.txt`),
+`README.md` and `LICENSE` are in, and nothing stray (no `src/`, `test/`,
+`examples/`) sneaks in.
 
 ## 4. Tag, release, let CI publish
 
