@@ -25,7 +25,7 @@ Also update the static version badge near the top of `README.md`
 npm run build && npm test
 ```
 
-Must be green (~85 tests).
+Must be green (~103 tests).
 
 ## 3. Inspect the tarball
 

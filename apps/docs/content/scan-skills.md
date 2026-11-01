@@ -74,7 +74,13 @@ Target kind is detected from the string: a value with a `scheme://` is `url`, a 
 | Name | Risk | Applies to | Steps | Parsers |
 | --- | --- | --- | --- | --- |
 | `http-baseline` | passive | `url`, `host` | 1. `httpx -json -silent -u {{target}}` 2. `nuclei -jsonl -silent -severity low,medium,high,critical -tags exposure,misconfig -u {{target}}` | `httpx-jsonl`, `nuclei-jsonl` |
+| `web-fingerprint` | passive | `url`, `host` | 1. `httpx -json -silent -tech-detect -title -status-code -web-server -u {{target}}` 2. `nuclei -jsonl -silent -tags tech -u {{target}}` | `httpx-jsonl`, `nuclei-jsonl` |
+| `cve-scan` | active | `url`, `host` | `nuclei -jsonl -silent -tags cve -severity medium,high,critical -u {{target}}` | `nuclei-jsonl` |
+| `exposed-panels` | passive | `url`, `host` | `nuclei -jsonl -silent -tags panel,login -u {{target}}` | `nuclei-jsonl` |
+| `takeover-check` | passive | `url`, `host` | `nuclei -jsonl -silent -tags takeover -u {{target}}` | `nuclei-jsonl` |
 | `service-discovery` | active | `host`, `ip` | `nmap -sV --top-ports 1000 -T3 -oG - {{target}}` | `nmap-grepable` |
+
+When to use each: `web-fingerprint` maps what a host runs (tech, title, server) before deeper work; `cve-scan` is the active known-CVE pass once a scope is confirmed (it runs for many minutes — note the long `timeoutMs`); `exposed-panels` surfaces admin/login interfaces that should not be public; `takeover-check` catches dangling DNS records pointing at unclaimed services.
 
 `risk` is a review label, not a runtime control: `passive` means fingerprinting and low-noise templates; `active` means service probes (top 1000 TCP ports with version detection). Pick the label honestly when you add a skill.
 

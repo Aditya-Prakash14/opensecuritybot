@@ -78,7 +78,7 @@ Running `vapt`, `triage` or `report` with nothing configured starts the wizard a
 
 ### Environment overrides
 
-Environment variables take precedence over the config file. A `.env` file in the current working directory is also loaded, with a note on stderr — prefer exported variables when running inside a directory you do not control, because a `.env` there can redirect where findings are sent.
+Environment variables take precedence over the config file. A `.env` file in the current working directory is loaded only when `VAPT_LOAD_DOTENV=1` is exported, because a `.env` in a directory you do not control can redirect where findings are sent.
 
 | Variable | Default | Notes |
 | --- | --- | --- |
@@ -110,13 +110,19 @@ Writes `scope.json`, `cve-cache/` and `report/` into the current directory (`-d 
 ```json
 {
   "engagement": "Acme Q4 external",
-  "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"]
+  "targets": ["acme.com", "*.api.acme.com", "10.10.0.0/24"],
+  "exclude": ["pay.api.acme.com"],
+  "notBefore": "2026-11-01T00:00:00Z",
+  "notAfter": "2026-11-30T23:59:59Z"
 }
 ```
 
 - `targets` must be a non-empty array, or the tool refuses to run.
 - Entries are plain strings or objects; object entries contribute the string values of `host`, `ip`, `url`, `domain`, `name`, `cidr` and `target`.
-- Matching covers exact hosts, any subdomain of a listed host (`acme.com` also matches `app.acme.com`), `*.wildcards` (base domain and subdomains), IPv4 CIDR and IPv6 CIDR ranges. Non-host strings are matched exactly.
+- Matching covers exact hosts, `*.wildcards` (base domain and subdomains), IPv4 CIDR and IPv6 CIDR ranges. Non-host strings are matched exactly.
+- A bare host authorizes only itself: `acme.com` does not match `app.acme.com`. Use `*.acme.com` to include subdomains.
+- `exclude` (optional) lists entries that are never in scope, even when a target matches. They win over `targets` everywhere: triage, report, diff and scan. Exclusions match whole hosts or CIDR ranges; an entry with a path is rejected.
+- `notBefore` / `notAfter` (optional ISO dates) bound when `vapt scan` may run. Triage and reporting of already-collected data are not time-limited.
 - Matching uses the host part of a target (`https://app.acme.com/x` matches `app.acme.com`), case-insensitively.
 - This file is the security boundary. Keep it to targets covered by your authorization.
 

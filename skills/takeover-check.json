@@ -1,0 +1,10 @@
+{
+  "name": "takeover-check",
+  "description": "Subdomain/service takeover detection (nuclei takeover tag), passive dangling-record checks.",
+  "appliesTo": ["url", "host"],
+  "risk": "passive",
+  "steps": [
+    { "tool": "nuclei", "args": ["-jsonl", "-silent", "-tags", "takeover", "-u", "{{target}}"], "timeoutMs": 300000 }
+  ],
+  "parsers": ["nuclei-jsonl"]
+}

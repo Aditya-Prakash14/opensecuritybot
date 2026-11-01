@@ -46,13 +46,14 @@ function opts(dir: string, over: Partial<RunOptions> = {}): RunOptions {
   return {
     skill: SKILL,
     target: TARGET,
-    scopeEntries: ["example.com"],
+    scopeEntries: ["*.example.com"],
     outDir: join(dir, "findings"),
     ledgerPath: join(dir, "scan-ledger.jsonl"),
     yes: true,
     dryRun: false,
     log: () => {},
     confirm: async () => true,
+    lookup: async () => ["93.184.216.34"],
     ...over,
   };
 }
@@ -127,6 +128,16 @@ test("runner: metadata endpoints are refused even when in scope", async () => {
     /metadata/,
   );
   assert.deepEqual(calls, []);
+});
+
+test("runner: a hostname resolving to link-local/metadata is refused before exec", async () => {
+  const dir = tmpdirPath();
+  const { calls, exec } = stubExec();
+  await assert.rejects(runSkill(opts(dir, { lookup: async () => ["169.254.169.254"] }), exec), /resolves to 169\.254\.169\.254/);
+  await assert.rejects(runSkill(opts(dir, { lookup: async () => ["::ffff:169.254.10.1"] }), exec), /link-local/);
+  await assert.rejects(runSkill(opts(dir, { lookup: async () => ["fe80::1"] }), exec), /link-local/);
+  assert.deepEqual(calls, []);
+  assert.throws(() => assertTargetAllowed("169.254.1.1", ["169.254.0.0/16"]), /link-local/);
 });
 
 test("runner: declined confirmation aborts and writes no ledger", async () => {

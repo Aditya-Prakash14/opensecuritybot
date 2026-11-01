@@ -56,6 +56,11 @@ export function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*m/g, "");
 }
 
+/** Drop C0/C1 control chars (keeps \n and \t) so untrusted text cannot drive the terminal. */
+export function stripControl(s: string): string {
+  return s.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g, "");
+}
+
 export function visibleLength(s: string): number {
   return stripAnsi(s).length;
 }
@@ -110,6 +115,7 @@ export function renderHeroCard(info: {
   model?: string;
   provider?: string;
   severityCounts?: Record<string, number>;
+  kevCount?: number;
 }): string {
   const rows = [
     `${dim("engagement")}  ${info.engagement ? bold(info.engagement) : yellow("None specified")}`,
@@ -122,6 +128,7 @@ export function renderHeroCard(info: {
       .map((k) => severityColor(k)(`${counts[k]} ${k}`));
     rows.push(`${dim("severity")}    ${parts.join(" · ")}`);
   }
+  if (info.kevCount) rows.push(`${dim("kev")}         ${red(`${info.kevCount} known exploited`)}`);
   rows.push(
     `${dim("provider")}    ${cyan(info.provider ?? "configured")} ${info.model ? dim(`(${info.model})`) : ""}`,
     `${dim("reports")}     ${info.reportsDir ? dim(info.reportsDir) : dim("./report/")}`,
@@ -134,13 +141,13 @@ export function renderHeroCard(info: {
  */
 export function findingHeader(
   f: { id: string; target: string; title?: string; severity?: string; tool?: string },
-  position?: { index: number; total: number },
+  position?: { index?: number; total?: number; kev?: boolean },
 ): string {
   const title = f.title ?? f.target;
   const badge = severityBadge(f.severity);
-  const line1 = `${bold(f.id)} — ${title}  ${badge}`;
+  const line1 = `${bold(f.id)} — ${title}  ${badge}${position?.kev ? ` ${red("KEV")}` : ""}`;
   const line2 = `${dim("target:")} ${cyan(f.target)}${f.tool ? `  ${dim("·  tool:")} ${dim(f.tool)}` : ""}`;
-  return "\n" + box([line1, line2], `finding ${f.id}${position ? ` · ${position.index}/${position.total}` : ""}`) + "\n";
+  return "\n" + box([line1, line2], `finding ${f.id}${position?.index ? ` · ${position.index}/${position.total}` : ""}`) + "\n";
 }
 
 /** Simple ASCII/ANSI progress bar: [████████░░░░░░░░] 50% (5/10) */
@@ -245,10 +252,10 @@ export function renderMarkdownLine(line: string): string {
   return out;
 }
 
-/** Stream chunks to stdout, rendering markdown line by line with Claude-style ⏺ marker. */
+/** Stream chunks to stdout, rendering markdown line by line. */
 export async function streamMarkdown(
   chunks: AsyncIterable<string>,
-  opts: { onFirstChunk?: () => void; prefixMarker?: boolean } = {},
+  opts: { onFirstChunk?: () => void } = {},
 ): Promise<string> {
   let first = true;
   let full = "";
@@ -257,9 +264,6 @@ export async function streamMarkdown(
     if (first) {
       first = false;
       opts.onFirstChunk?.();
-      if (opts.prefixMarker) {
-        process.stdout.write(coral("⏺ ") + "\n");
-      }
     }
     full += chunk;
     buf += chunk;
@@ -287,10 +291,13 @@ export function formatTriageResult(r: TriageResult): string {
   if (r.flaggedForManualReview) {
     lines.push(`${dim("flagged")}    ${yellow("for manual review")}`);
   }
+  // crossCheckCves appends its notes as a "[verify] ..." suffix; show them as their own row.
+  const [reasoning = "", verifyNote] = r.triage.reasoning.split(/\n\n\[verify\] /);
+  if (verifyNote) lines.push(`${dim("verify")}     ${yellow(verifyNote)}`);
   lines.push(
     "",
     bold("reasoning"),
-    r.triage.reasoning,
+    reasoning,
     "",
     bold("explanation"),
     r.explanation,

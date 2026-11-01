@@ -1,0 +1,11 @@
+{
+  "name": "web-fingerprint",
+  "description": "Passive web fingerprint: httpx tech/title/server detection, then nuclei technology templates.",
+  "appliesTo": ["url", "host"],
+  "risk": "passive",
+  "steps": [
+    { "tool": "httpx", "args": ["-json", "-silent", "-tech-detect", "-title", "-status-code", "-web-server", "-u", "{{target}}"] },
+    { "tool": "nuclei", "args": ["-jsonl", "-silent", "-tags", "tech", "-u", "{{target}}"], "timeoutMs": 600000 }
+  ],
+  "parsers": ["httpx-jsonl", "nuclei-jsonl"]
+}

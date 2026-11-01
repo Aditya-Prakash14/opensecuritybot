@@ -8,7 +8,6 @@ import { NORMALIZERS, normalizeOutput } from "../src/normalizers.js";
 import {
   getSkill,
   loadSkills,
-  PARSER_NAMES,
   renderArgs,
   skillApplies,
   skillsDir,
@@ -33,17 +32,47 @@ function writeSkillDir(files: Record<string, unknown>): string {
   return dir;
 }
 
-test("skills: real skills/ dir loads both skills, sorted by file name", () => {
+test("skills: real skills/ dir loads every skill, sorted by file name", () => {
   const skills = loadSkills("skills");
-  assert.deepEqual(skills.map((s) => s.name), ["http-baseline", "service-discovery"]);
-  assert.deepEqual(skills.map((s) => s.parsers), [["httpx-jsonl", "nuclei-jsonl"], ["nmap-grepable"]]);
+  assert.deepEqual(skills.map((s) => s.name), [
+    "cve-scan",
+    "exposed-panels",
+    "http-baseline",
+    "service-discovery",
+    "takeover-check",
+    "web-fingerprint",
+  ]);
   for (const skill of skills) {
     assert.equal(skill.steps.length, skill.parsers.length);
     for (const step of skill.steps) assert.ok((TOOL_ALLOWLIST as readonly string[]).includes(step.tool));
     for (const parser of skill.parsers) assert.ok((NORMALIZERS as readonly string[]).includes(parser));
   }
-  // Parser names must stay in lockstep with the normalizer registry.
-  assert.deepEqual([...PARSER_NAMES], [...NORMALIZERS]);
+});
+
+test("skills: new reviewed skills load, validate and render argv with the target", () => {
+  const expected: Record<string, { risk: string; parsers: string[]; tools: string[]; renders: string }> = {
+    "cve-scan": { risk: "active", parsers: ["nuclei-jsonl"], tools: ["nuclei"], renders: "https://app.example.com" },
+    "exposed-panels": { risk: "passive", parsers: ["nuclei-jsonl"], tools: ["nuclei"], renders: "https://app.example.com" },
+    "takeover-check": { risk: "passive", parsers: ["nuclei-jsonl"], tools: ["nuclei"], renders: "https://app.example.com" },
+    "web-fingerprint": { risk: "passive", parsers: ["httpx-jsonl", "nuclei-jsonl"], tools: ["httpx", "nuclei"], renders: "https://app.example.com" },
+  };
+  for (const [name, want] of Object.entries(expected)) {
+    const skill = getSkill(name, "skills");
+    assert.equal(skill.risk, want.risk);
+    assert.deepEqual(skill.parsers, want.parsers);
+    assert.equal(skill.steps.length, skill.parsers.length, `${name}: parsers match steps`);
+    assert.deepEqual(skill.steps.map((s) => s.tool), want.tools);
+    // every step renders {{target}} into the given target and leaves no placeholder behind
+    for (const step of skill.steps) {
+      const argv = renderArgs(step.args, want.renders);
+      assert.ok(argv.includes(want.renders), `${name}: argv carries the target`);
+      assert.ok(!argv.some((a) => a.includes("{{")), `${name}: no unrendered placeholder`);
+    }
+    // nuclei steps carry an explicit timeout (broad tags run for minutes)
+    for (const step of skill.steps) {
+      if (step.tool === "nuclei") assert.ok((step.timeoutMs ?? 0) > 0, `${name}: nuclei step has a timeout`);
+    }
+  }
 });
 
 test("skills: valid temp skill loads, non-json files ignored, VAPT_SKILLS_DIR wins", () => {

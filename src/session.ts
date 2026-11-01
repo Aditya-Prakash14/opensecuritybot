@@ -2,15 +2,16 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { DATA_RULE, SYSTEM_PROMPT, dataTag } from "./agent-prompt.js";
-import { findCveIds, loadCveCache, prefetchMissingCves } from "./cve-cache.js";
+import { findCveIds, isKnownExploited, loadCveCache, markKnownExploited, prefetchMissingCves } from "./cve-cache.js";
 import { deduplicateFindings, loadFindings } from "./findings.js";
-import { loadLedger, summarizeLedger } from "./ledger.js";
+import { loadLedger, summarizeLedger, verifyLedger } from "./ledger.js";
 import { type ChatMessage, chatStream } from "./llm.js";
-import { buildReport, saveReport } from "./report.js";
+import { buildReport, saveReport, triageMemo } from "./report.js";
 import { filterInScope, loadScope, scopeEntries } from "./scope-guard.js";
 import { loadConfig } from "./config.js";
 import { ensureConfigured } from "./setup.js";
-import { type TriageCtx, sortBySeverity, triageFindingJson } from "./triage.js";
+import { type TriageCtx, sortBySeverity } from "./triage.js";
+import { validateTriageResult } from "./verify.js";
 import {
   bold,
   box,
@@ -59,6 +60,26 @@ export function slashCompleter(line: string, ids: string[]): [string[], string] 
   return [[], line];
 }
 
+/** Keep only well-formed results and user/assistant string turns from a saved session. */
+export function parseSessionState(raw: any): { results: [string, TriageResult][]; history?: ChatMessage[]; dropped: number } {
+  let dropped = 0;
+  const results: [string, TriageResult][] = [];
+  for (const pair of Array.isArray(raw?.results) ? raw.results : []) {
+    try {
+      if (!Array.isArray(pair) || typeof pair[0] !== "string") throw new Error("bad pair");
+      results.push([pair[0], validateTriageResult(pair[1])]);
+    } catch {
+      dropped++;
+    }
+  }
+  if (!Array.isArray(raw?.history)) return { results, dropped };
+  const history = raw.history.filter(
+    (m: any) => (m?.role === "user" || m?.role === "assistant") && typeof m?.content === "string",
+  ) as ChatMessage[];
+  dropped += raw.history.length - history.length;
+  return { results, history: history.map(({ role, content }) => ({ role, content })), dropped };
+}
+
 /** Interactive Claude-Code-style session: welcome card, slash commands, streamed answers. */
 export async function startSession(opts: SessionOptions): Promise<void> {
   if (!process.stdin.isTTY) {
@@ -99,6 +120,12 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     severityCounts[key] = (severityCounts[key] ?? 0) + 1;
   }
 
+  // Populate the CVE cache before the first question: without it the model reasons blind and every cited CVE is flagged unverified.
+  const cveIds = findCveIds(JSON.stringify(state.findings));
+  const logStderr = (m: string) => process.stderr.write(dim(m) + "\n");
+  await prefetchMissingCves(cveIds, state.cache, opts.cache, logStderr);
+  await markKnownExploited(cveIds, state.cache, opts.cache, logStderr);
+
   process.stderr.write("\n" + renderAvatar() + "\n\n");
   process.stderr.write(
     renderHeroCard({
@@ -109,6 +136,7 @@ export async function startSession(opts: SessionOptions): Promise<void> {
       model: cfg?.model,
       provider: cfg?.provider,
       severityCounts,
+      kevCount: state.findings.filter((f) => isKnownExploited(f, state.cache)).length,
     }) + "\n",
   );
   process.stderr.write(`  ${dim("authorized engagements only · tab completes · /help for commands · /exit to quit")}\n`);
@@ -120,11 +148,6 @@ export async function startSession(opts: SessionOptions): Promise<void> {
     );
   }
   process.stderr.write("\n");
-
-  // Populate the CVE cache before the first question: without it the model reasons blind and every cited CVE is flagged unverified.
-  await prefetchMissingCves(findCveIds(JSON.stringify(state.findings)), state.cache, opts.cache, (m) =>
-    process.stderr.write(dim(m) + "\n"),
-  );
 
   const rl = createInterface({
     input: process.stdin,
@@ -219,17 +242,12 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
       const targetPath = rest[0] || join(opts.out, "session-state.json");
       try {
         const raw = JSON.parse(readFileSync(targetPath, "utf8"));
-        let count = 0;
-        if (Array.isArray(raw?.results)) {
-          for (const [k, v] of raw.results) {
-            state.results.set(k, v);
-            count++;
-          }
-        }
-        if (Array.isArray(raw?.history)) {
-          state.history = raw.history;
-        }
-        process.stdout.write(green(`loaded session state (${count} result(s)) from ${targetPath}`) + "\n");
+        // A session file is untrusted: history is replayed to the model as real turns.
+        const { results, history, dropped } = parseSessionState(raw);
+        for (const [k, v] of results) state.results.set(k, v);
+        if (history) state.history = history;
+        process.stdout.write(green(`loaded session state (${results.length} result(s)) from ${targetPath}`) + "\n");
+        if (dropped) process.stderr.write(yellow(`warn: dropped ${dropped} invalid entr${dropped === 1 ? "y" : "ies"}`) + "\n");
       } catch (e) {
         process.stderr.write(red(`failed to load session: ${(e as Error).message}`) + "\n");
       }
@@ -254,14 +272,16 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
       }
       const width = process.stdout.columns ?? 100;
       const triaged = state.findings.filter((f) => state.results.has(f.id)).length;
+      const flagged = [...state.results.values()].filter((r) => r.flaggedForManualReview).length;
       process.stdout.write(
-        `\n${dim(`${state.findings.length} in-scope · ${triaged} triaged · ${state.findings.length - triaged} queued`)}\n`,
+        `\n${dim(`${state.findings.length} in-scope · ${triaged} triaged · ${state.findings.length - triaged} queued${flagged ? ` · ${flagged} flagged` : ""}`)}\n`,
       );
       for (const f of state.findings) {
         const mark = state.results.has(f.id) ? green("triaged") : dim("queued ");
+        const kev = isKnownExploited(f, state.cache) ? ` ${red("KEV")}` : "";
         const label = truncate(String(f.title ?? f.target), Math.max(20, width - 36));
         process.stdout.write(
-          `${f.id.padEnd(12)} ${severityColor(f.severity)(String(f.severity ?? "?").padEnd(9))} ${mark} ${label}\n`,
+          `${f.id.padEnd(12)} ${severityColor(f.severity)(String(f.severity ?? "?").padEnd(9))} ${mark}${kev} ${label}\n`,
         );
       }
       process.stdout.write("\n");
@@ -279,11 +299,12 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         return;
       }
       const ctx: TriageCtx = { scope: state.scope, cache: state.cache };
+      const memo = triageMemo(join(opts.out, "triage-cache.json")); // shared with /report, so nothing is triaged twice
       for (const [i, f] of queue.entries()) {
         const started = Date.now();
         const sp = spinner(`Triaging ${f.id} (${f.severity ?? "?"}) ${dim(`[${i + 1}/${queue.length}]`)}`);
         try {
-          const r = await triageFindingJson(f, ctx);
+          const r = await memo.triage(f, ctx);
           state.results.set(f.id, r);
           sp.stop(green(`✓ ${f.id} triaged in ${((Date.now() - started) / 1000).toFixed(1)}s`));
           process.stdout.write(
@@ -293,6 +314,7 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
           sp.stop(red(`fail: ${f.id}: ${(e as Error).message}`));
         }
       }
+      memo.save((m) => process.stderr.write(dim(m) + "\n"));
       return;
     }
 
@@ -305,17 +327,22 @@ async function handleCommand(line: string, state: SessionState, opts: SessionOpt
         process.stderr.write(yellow("no in-scope findings loaded\n"));
         return;
       }
-      const ledger = loadLedger(join(opts.out, "scan-ledger.jsonl"));
+      const ledgerPath = join(opts.out, "scan-ledger.jsonl");
+      const ledger = loadLedger(ledgerPath);
+      const chain = ledger.length > 0 ? verifyLedger(ledgerPath) : undefined;
       if (ledger.length > 0) {
-        process.stderr.write(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger`) + "\n");
+        process.stderr.write(dim(`methodology: ${ledger.length} scan step(s) from the execution ledger (hash chain ${chain})`) + "\n");
       }
       const outcome = await buildReport(
         state.findings,
-        { scope: state.scope, cache: state.cache },
+        { scope: state.scope, cache: state.cache, resultsPath: join(opts.out, "triage-cache.json") },
         (m) => process.stderr.write(dim(m) + "\n"),
-        summarizeLedger(ledger),
+        summarizeLedger(ledger, chain),
       );
       process.stdout.write(outcome.markdown + "\n");
+      const p = outcome.provenance;
+      process.stderr.write(dim(`provenance: model ${p.model} via ${p.endpoint} · prompt sha256:${p.promptSha256}`) + "\n");
+      if (chain?.startsWith("broken")) process.stderr.write(yellow(`warn: execution ledger hash chain ${chain}`) + "\n");
       try {
         const file = saveReport(outcome.markdown, opts.out);
         process.stderr.write(green(`saved: ${file}`) + "\n");

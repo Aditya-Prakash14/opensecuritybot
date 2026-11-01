@@ -1,10 +1,11 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
+import { lookup } from "node:dns/promises";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { appendLedger } from "./ledger.js";
 import { normalizeOutput } from "./normalizers.js";
-import { isInScope } from "./scope-guard.js";
+import { hostOf, isInScope } from "./scope-guard.js";
 import { type Skill, renderArgs } from "./skills.js";
 
 export interface ExecResult {
@@ -25,6 +26,7 @@ export interface RunOptions {
   dryRun: boolean; // print commands, execute nothing, write nothing
   log: (msg: string) => void;
   confirm: (label: string, argv: string[]) => Promise<boolean>;
+  lookup?: (host: string) => Promise<string[]>; // DNS resolver, injectable for tests
 }
 
 export interface RunResult {
@@ -37,25 +39,39 @@ const METADATA_HOSTS = new Set(["169.254.169.254", "fd00:ec2::254", "metadata.go
 const DEFAULT_TIMEOUT_MS = 120000;
 const CAPTURE_BYTES = 10 * 1024 * 1024;
 
-/** Host with scheme, path, port and brackets stripped; lowercased. */
-function hostName(target: string): string {
-  const v = target.trim().replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").split("/")[0]!;
-  if (v.startsWith("[")) {
-    const end = v.indexOf("]");
-    return v.slice(1, end < 0 ? undefined : end).toLowerCase();
-  }
-  // more than one colon means IPv6, never strip a "port" off it
-  return ((v.match(/:/g)?.length ?? 0) > 1 ? v : v.replace(/:\d+$/, "")).toLowerCase();
-}
-
 /** Metadata endpoints are refused even when listed in scope; then the scope is enforced. */
 export function assertTargetAllowed(target: string, scopeEntries: string[]): void {
-  if (METADATA_HOSTS.has(hostName(target))) {
-    throw new Error(`target "${target}" is a cloud metadata endpoint — always refused`);
+  if (isBlockedAddress(hostOf(target))) {
+    throw new Error(`target "${target}" is a link-local/cloud metadata address — always refused`);
   }
   if (!isInScope(target, scopeEntries)) {
     throw new Error(`target "${target}" is outside the confirmed scope`);
   }
+}
+
+/** Link-local (cloud metadata lives here) and the known metadata literals. */
+export function isBlockedAddress(addr: string): boolean {
+  const a = addr.toLowerCase().replace(/^::ffff:/, "");
+  return METADATA_HOSTS.has(a) || a.startsWith("169.254.") || /^fe[89ab][0-9a-f]:/.test(a);
+}
+
+async function defaultLookup(host: string): Promise<string[]> {
+  try {
+    const addrs = await Promise.race([
+      lookup(host, { all: true }),
+      new Promise<never>((_, reject) => setTimeout(reject, 5000).unref()),
+    ]);
+    return addrs.map((a) => a.address);
+  } catch {
+    return []; // unresolvable here means the tool cannot reach it either
+  }
+}
+
+/** A hostname in scope must not resolve to a metadata/link-local address. */
+// shortcut: checks DNS before each step but the tool resolves again (rebinding window); pin IPs if that matters.
+export async function assertResolvesSafely(target: string, resolve: (host: string) => Promise<string[]> = defaultLookup): Promise<void> {
+  const bad = (await resolve(hostOf(target))).find(isBlockedAddress);
+  if (bad) throw new Error(`target "${target}" resolves to ${bad} (link-local/metadata) — always refused`);
 }
 
 /** Never rejects: spawn failures (e.g. ENOENT) resolve with exitCode null so they reach the ledger. */
@@ -109,6 +125,7 @@ export async function runSkill(opts: RunOptions, exec?: ExecFn): Promise<RunResu
     if (!yes && !(await confirm(`step ${i}/${skill.steps.length}: ${step.tool}`, argv))) {
       throw new Error(`aborted by operator at step ${i}`);
     }
+    await assertResolvesSafely(target, opts.lookup);
     const started = Date.now();
     const res = await run(step.tool, argv, step.timeoutMs ?? DEFAULT_TIMEOUT_MS);
     const durationMs = Date.now() - started;

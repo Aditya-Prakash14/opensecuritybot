@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
-import { appendFileSync, mkdtempSync, readFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { type LedgerEntry, appendLedger, loadLedger, summarizeLedger } from "../src/ledger.js";
+import { type LedgerEntry, appendLedger, loadLedger, summarizeLedger, verifyLedger } from "../src/ledger.js";
 
 function tmpdirPath(): string {
   return mkdtempSync(join(tmpdir(), "vapt-ledger-"));
@@ -29,7 +29,30 @@ test("appendLedger creates missing parent dirs and loadLedger round-trips", () =
   const path = join(tmpdirPath(), "report", "scan-ledger.jsonl");
   const written = entry();
   appendLedger(path, written);
-  assert.deepEqual(loadLedger(path), [written]);
+  assert.deepEqual(loadLedger(path), [{ ...written, prevHash: null }]);
+});
+
+test("verifyLedger: intact chain, then edits, deletions and legacy files", () => {
+  const path = join(tmpdirPath(), "ledger.jsonl");
+  assert.equal(verifyLedger(path), "unchained");
+  appendLedger(path, entry({ step: 1 }));
+  appendLedger(path, entry({ step: 2 }));
+  appendLedger(path, entry({ step: 3 }));
+  assert.equal(verifyLedger(path), "intact");
+
+  const lines = readFileSync(path, "utf8").split("\n").filter(Boolean);
+  writeFileSync(path, [lines[0], lines[1]!.replace('"exitCode":0', '"exitCode":1'), lines[2]].join("\n") + "\n");
+  assert.equal(verifyLedger(path), "broken at line 3", "an edited line breaks the next link");
+
+  writeFileSync(path, [lines[0], lines[2]].join("\n") + "\n");
+  assert.equal(verifyLedger(path), "broken at line 2", "a removed line breaks the chain");
+
+  const legacy = join(tmpdirPath(), "legacy.jsonl");
+  writeFileSync(legacy, JSON.stringify(entry()) + "\n");
+  assert.equal(verifyLedger(legacy), "unchained");
+  appendLedger(legacy, entry({ step: 2 }));
+  assert.equal(verifyLedger(legacy), "intact", "new entries chain onto a legacy ledger");
+  assert.match(summarizeLedger(loadLedger(legacy), "intact"), /- ledger hash chain: intact$/);
 });
 
 test("two appends leave two lines and two entries", () => {

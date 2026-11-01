@@ -1,0 +1,62 @@
+[
+  {
+    "note": "real exposure: config body returned",
+    "finding": {
+      "id": "E-1",
+      "target": "https://app.example.com/.git/config",
+      "title": "Exposed .git/config",
+      "severity": "high",
+      "tool": "nuclei",
+      "raw": { "status": 200, "body": "[core]\n\trepositoryformatversion = 0\n[remote \"origin\"]\n\turl = git@github.com:example/app.git" }
+    },
+    "expected": { "isLikelyTruePositive": true, "severity": "high" }
+  },
+  {
+    "note": "scanner matched a soft-404 page",
+    "finding": {
+      "id": "E-2",
+      "target": "https://app.example.com/backup/",
+      "title": "Directory listing enabled",
+      "severity": "medium",
+      "tool": "nuclei",
+      "raw": { "status": 404, "body": "<html><title>404 Not Found</title><h1>Not Found</h1></html>" }
+    },
+    "expected": { "isLikelyTruePositive": false, "severity": "info" }
+  },
+  {
+    "note": "header genuinely absent on an HTTPS app",
+    "finding": {
+      "id": "E-3",
+      "target": "https://app.example.com",
+      "title": "Missing Strict-Transport-Security header",
+      "severity": "low",
+      "tool": "nuclei",
+      "raw": { "status": 200, "headers": { "content-type": "text/html", "server": "nginx" } }
+    },
+    "expected": { "isLikelyTruePositive": true, "severity": "low" }
+  },
+  {
+    "note": "redirect stays on the same origin",
+    "finding": {
+      "id": "E-4",
+      "target": "https://app.example.com/login?next=/dashboard",
+      "title": "Open redirect",
+      "severity": "medium",
+      "tool": "zap",
+      "raw": { "status": 302, "headers": { "location": "https://app.example.com/dashboard" } }
+    },
+    "expected": { "isLikelyTruePositive": false, "severity": "info" }
+  },
+  {
+    "note": "TLS 1.0 handshake completed",
+    "finding": {
+      "id": "E-5",
+      "target": "app.example.com:443",
+      "title": "TLS 1.0 supported",
+      "severity": "medium",
+      "tool": "nmap",
+      "raw": { "ssl-enum-ciphers": "TLSv1.0: ciphers: TLS_RSA_WITH_AES_128_CBC_SHA - A" }
+    },
+    "expected": { "isLikelyTruePositive": true, "severity": "low" }
+  }
+]

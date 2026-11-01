@@ -1,4 +1,4 @@
 {
   "engagement": "Example Corp external web assessment",
-  "targets": ["example.com", "*.api.example.com", "10.10.0.0/24"]
+  "targets": ["*.example.com", "10.10.0.0/24"]
 }
