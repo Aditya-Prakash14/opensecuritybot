@@ -1,0 +1,38 @@
+Audit knowledge packs — vendored third-party content
+====================================================
+
+Every *.md file in this directory except audit-mode.md is vendored, unmodified, from
+the Cloudflare security-audit skill:
+
+    https://github.com/cloudflare/security-audit-skill
+    MIT License, Copyright (c) 2025-2026 Cloudflare, Inc. — see LICENSE-cloudflare.txt
+
+Vendored as-is (lowercased file names, content unchanged):
+    attack-classes.md                    AI-AND-LLM.md (ai-and-llm.md)
+    ai-and-llm.md                        CLIENT-SIDE.md
+    client-side.md                       CLOUD-AND-DEPLOYMENT.md
+    cloud-and-deployment.md              DATA-ISOLATION-AND-LIFECYCLE.md
+    data-isolation-and-lifecycle.md      DESKTOP-MOBILE-AND-LOCAL-IPC.md
+    desktop-mobile-and-local-ipc.md      MEMORY-SAFETY-AND-BINARY.md
+    memory-safety-and-binary.md          PROTOCOLS-RPC-AND-MESSAGING.md
+    protocols-rpc-and-messaging.md       RESOURCE-EXHAUSTION-AND-AVAILABILITY.md
+    resource-exhaustion-and-availability.md
+    supply-chain-and-release.md
+    web-protocol-and-auth.md
+
+Written for this tool (not Cloudflare content):
+    audit-mode.md         how `vapt audit` maps the audit skill's hunting stage onto the
+                          tool's existing triage/verify stage
+    validation-rules.md   the "Core validation rules" block from HUNTING.md, extracted
+                          verbatim, plus a provenance header
+
+Deliberately NOT vendored, because they describe a multi-agent harness this CLI does not
+have: SKILL.md, HUNTING.md, RECONNAISSANCE.md, VALIDATION-AND-REPORTING.md, the
+validate-*.cjs validators, and report-schema.json. Their orchestration model — isolated
+hunters, coverage critics, per-run scratch dirs, an OS-enforced sandbox — is replaced
+here by the tool's existing pipeline: audit produces candidates, triage adversarially
+verifies each one, verify.ts cross-checks CVE claims.
+
+The vendored files still mention `subagent_type:` and multi-agent vocabulary in places.
+That text is harmless here but is not an instruction to this tool: `vapt audit` runs a
+single agent and never delegates.

@@ -148,7 +148,7 @@ vapt skills [--dir <dir>]
 | --- | --- | --- |
 | `--dir <dir>` | `VAPT_SKILLS_DIR`, else the `skills/` bundled with the installed package | skills directory |
 
-Lists each skill's name, risk, target kinds, tools and description. Every `*.json` file in the directory is loaded and validated; one malformed file fails the command.
+Lists each scan skill's name, risk, target kinds, tools and description — every `*.json` file in the directory is loaded and validated, and one malformed file fails the command — then the [audit knowledge packs](../code-audit/) used by `vapt audit` (`*.md` in `skills/audit/`).
 
 ```sh
 vapt skills
@@ -176,6 +176,32 @@ Runs reviewed, allowlisted argv with `shell: false`, re-checks scope before ever
 ```sh
 vapt scan --skill http-baseline --target https://app.acme.com --dry-run
 vapt scan --skill service-discovery --target 10.10.0.5 --yes -o findings/
+```
+
+## vapt audit
+
+```sh
+vapt audit <path> [-t <target>] [-k <names>] [-o <dir>] [--ledger <path>] [--max-bytes <chars>] [--chunk-bytes <chars>] [-q]
+```
+
+| Option | Default | Description |
+| --- | --- | --- |
+| `<path>` | required | local directory to audit; read-only, nothing is executed |
+| `-t, --target <target>` | the resolved path | target string written to every finding, for scope matching |
+| `-k, --knowledge <names>` | auto-selected | knowledge packs: comma-separated names or `all` (see `vapt skills`) |
+| `-o, --out <dir>` | `./findings` | findings output directory |
+| `--ledger <path>` | `./report/scan-ledger.jsonl` | append-only execution ledger |
+| `--max-bytes <chars>` | `400000` | total source budget for one run; over budget is an error, never a silent truncation |
+| `--chunk-bytes <chars>` | `120000` | source budget per LLM call |
+| `-q, --quiet` | off | suppress progress messages on stderr |
+
+Reads local source, applies the reviewed attack-class knowledge, and writes *candidate* findings in the same normalized shape scanners produce, so `vapt triage`, `vapt report` and `vapt diff` work unchanged. Nothing is executed and no target is contacted — the only network call is to your configured LLM endpoint, which receives the source it reviews. Exit code is `1` on a hard error (missing path, over budget, unreadable knowledge); a clean run with zero candidates exits `0`.
+
+The audit path must also be present in `scope.json` (as a path target) before triage or report will process its findings — the command prints the exact string to add. See [Code Audit](../code-audit/) for detail.
+
+```sh
+vapt audit ./src
+vapt audit . --knowledge attack-classes,ai-and-llm -o findings/
 ```
 
 ## vapt workspace
@@ -220,7 +246,8 @@ Environment variables take precedence over the config file. A `.env` in the curr
 | `VAPT_NVD_API_KEY` | — | sent to the NVD API; shortens prefetch waits |
 | `VAPT_NVD_MAX` | `25` | maximum CVEs prefetched per run; `0` disables |
 | `VAPT_NVD_DELAY_MS` | `6000`, or `700` with `VAPT_NVD_API_KEY` | wait between NVD requests |
-| `VAPT_SKILLS_DIR` | bundled `skills/` | replaces the scan-skills directory |
+| `VAPT_SKILLS_DIR` | bundled `skills/` | replaces the scan-skills and audit-knowledge directory root |
+| `VAPT_AUDIT_DIR` | `<VAPT_SKILLS_DIR>/audit` | replaces the audit knowledge directory |
 | `VAPT_WORKSPACES_ROOT` | `<VAPT_CONFIG_DIR>/workspaces` | workspace root |
 | `VAPT_REPORT_MAX_PROMPT_TOKENS` | `120000` | synthesis prompt size warning; `0` disables the check |
 
@@ -228,7 +255,7 @@ Environment variables take precedence over the config file. A `.env` in the curr
 
 - **stdout** carries data: Markdown reports, triage JSON, listings, diff JSON, HTML when `--html` is the only output. `--json` is pipe-safe.
 - **stderr** carries chrome: progress, spinners, skips, warnings, `saved:` confirmations and errors.
-- Exit code `1` when: a triage fails (`triage`, `report`), a scan step fails, a report save fails, or any unhandled error occurs. Partial results are still emitted in the failure cases.
+- Exit code `1` when: a triage fails (`triage`, `report`), a scan step fails, an audit run fails, a report save fails, or any unhandled error occurs. Partial results are still emitted in the failure cases.
 - Exit code `0` in the normal case, including runs that legitimately produced no findings.
 - `vapt diff` prints its summary on stdout; `-q` without `-o` prints the Markdown body to stdout instead, and `--json` returns the diff object without writing `-o`.
 - `vapt --version` prints the version; `vapt --help` shows usage and examples.

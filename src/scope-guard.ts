@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
 import type { Finding, Scope } from "./types.js";
 
 /** A scope file is mandatory: without a confirmed scope we refuse to process anything. */
@@ -111,8 +112,25 @@ export function hostOf(value: string): string {
   return (bracketed ? bracketed[1]! : stripPort(raw)).toLowerCase();
 }
 
-/** Exclusions ("!entry") win over inclusions. */
+/** Local source paths (e.g. `vapt audit`) are scoped as paths, never as hosts. */
+const isPathLike = (value: string): boolean => /^(~?\/|\.{1,2}\/)/.test(value.trim());
+
+/** Exclusions ("!entry") win over inclusions, for path entries as for host entries. */
 export function isInScope(target: string, entries: string[]): boolean {
+  if (isPathLike(target)) {
+    const path = normalizePath(target);
+    // A path target matches only a path entry: the same path, or a directory that contains it.
+    const matchesPath = (raw: string) => {
+      if (!isPathLike(raw)) return false;
+      const scoped = normalizePath(raw);
+      if (scoped.startsWith("/")) return path === scoped || path.startsWith(scoped + "/");
+      // Relative entries (`./src`, `myrepo/src`) match the same tail of an absolute target.
+      return path === scoped || path.endsWith("/" + scoped) || path.includes("/" + scoped + "/");
+    };
+    if (entries.some((e) => e.startsWith("!") && matchesPath(e.slice(1)))) return false;
+    return entries.some((e) => !e.startsWith("!") && matchesPath(e));
+  }
+
   const host = hostOf(target);
   const lowerTarget = target.trim().toLowerCase();
   const hit = (e: string) => matchesEntry(host, lowerTarget, e);
@@ -146,6 +164,16 @@ export function filterInScope(findings: Finding[], entries: string[]): { inScope
   const outOfScope: Finding[] = [];
   for (const f of findings) (isInScope(f.target, entries) ? inScope : outOfScope).push(f);
   return { inScope, outOfScope };
+}
+
+/** `~`, trailing slashes and a leading `./` never change which path a scope entry means. */
+function normalizePath(value: string): string {
+  const v = value
+    .trim()
+    .replace(/^~(?=\/|$)/, homedir())
+    .replace(/\/+$/, "")
+    .replace(/^\.\//, "");
+  return v || "/";
 }
 
 /** Strip a trailing :port — but never from IPv6-shaped values (more than one colon). */
